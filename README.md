@@ -50,6 +50,19 @@ Notably it converts the raw glyph representations in font files into scaled, hin
 ICU4X enables text analysis and internationalisation. For Parley, this includes locale and language recognition, 
 bidirectional text evaluation, text segmentation, emoji recognition, NFC/NFD normalisation and other Unicode character information.
 
+Applications that already bundle a word and line segmenter can implement `parley::TextSegmenter`
+and install it with `LayoutContext::set_text_segmenter(Some(Arc::new(segmenter)))`.
+The low-level API accepts the same implementation through `AnalysisOptions::text_segmenter`.
+This lets an embedder reuse its existing Unicode dictionaries, including those in ICU4C,
+without linking another ICU library from Parley.
+
+When using a host segmenter, leave the `complex-scripts` Cargo feature disabled to avoid
+bundling Parley's ICU4X dictionaries as well. The host must supply both word and line boundaries
+as UTF-8 byte offsets, including the beginning and end of the supplied text, and implement
+the requested `WordBreak` behavior. Parley continues to apply line break overrides, mandatory
+breaks, and its built-in grapheme and Unicode property analysis. Passing `None` restores the
+built-in segmenters; cloning a layout context shares its configured host segmenter.
+
 ### Parley
 
 Parley itself does text layout and includes utilities for text selection and editing.

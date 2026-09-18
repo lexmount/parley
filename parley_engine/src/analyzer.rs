@@ -3,11 +3,12 @@
 
 //! The analyzer API.
 
+use alloc::vec::Vec;
 use core::ops::Range;
 
 use parlance::{BaseDirection, WordBreak};
 
-use crate::{bidi::BidiResolver, break_overrides::LineBreakOverrideFn};
+use crate::{TextSegmenter, bidi::BidiResolver, break_overrides::LineBreakOverrideFn};
 
 use crate::analysis::{Analysis, analyze_text};
 
@@ -15,6 +16,8 @@ use crate::analysis::{Analysis, analyze_text};
 #[derive(Default)]
 pub struct Analyzer {
     pub(crate) bidi: BidiResolver,
+    pub(crate) word_boundaries: Vec<usize>,
+    pub(crate) line_boundaries: Vec<usize>,
 }
 
 impl core::fmt::Debug for Analyzer {
@@ -34,6 +37,8 @@ impl Analyzer {
     /// This reuses the allocations of `analysis`.
     pub fn analyze(&mut self, text: &str, options: &AnalysisOptions<'_>, analysis: &mut Analysis) {
         analysis.clear();
+        self.word_boundaries.clear();
+        self.line_boundaries.clear();
         analyze_text(self, text, options, analysis);
     }
 }
@@ -51,6 +56,13 @@ pub struct AnalysisOptions<'a> {
     /// Ranges must be sorted and non-overlapping, and must start and end on character boundaries of
     /// the text. Empty ranges are ignored. Gaps use [`WordBreak::Normal`].
     pub word_break: &'a [(Range<usize>, WordBreak)],
+
+    /// An optional host segmenter for word and line boundaries.
+    ///
+    /// When set, Parley does not call its ICU4X word or line segmenters. Leave the
+    /// `complex-scripts` feature disabled to avoid bundling duplicate dictionaries.
+    /// `None` uses Parley's built-in segmentation.
+    pub text_segmenter: Option<&'a dyn TextSegmenter>,
 
     /// The callback which will be called as a first provider of line breaking decisions.
     ///

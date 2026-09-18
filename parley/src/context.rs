@@ -5,10 +5,10 @@
 
 use core::ops::Range;
 
-use alloc::{vec, vec::Vec};
+use alloc::{sync::Arc, vec, vec::Vec};
 
 use parlance::WordBreak;
-use parley_engine::{Analysis, AnalysisDataSources, Analyzer, Shaper};
+use parley_engine::{Analysis, AnalysisDataSources, Analyzer, Shaper, TextSegmenter};
 
 use super::FontContext;
 use super::builder::{BuilderOptions, RangedBuilder, StyleRunBuilder};
@@ -32,6 +32,7 @@ pub struct LayoutContext<B: Brush = [u8; 4]> {
     pub(crate) analyzer: Analyzer,
     pub(crate) analysis: Analysis,
     pub(crate) word_break: Vec<(Range<usize>, WordBreak)>,
+    pub(crate) text_segmenter: Option<Arc<dyn TextSegmenter>>,
 
     // Reusable style builders (to amortise allocations)
     pub(crate) ranged_style_builder: RangedStyleBuilder<B>,
@@ -55,12 +56,23 @@ impl<B: Brush> LayoutContext<B> {
             analyzer: Analyzer::new(),
             analysis: Analysis::new(),
             word_break: Vec::new(),
+            text_segmenter: None,
             ranged_style_builder: RangedStyleBuilder::default(),
             tree_style_builder: TreeStyleBuilder::default(),
             char_style_indices: vec![],
             analysis_data_sources: AnalysisDataSources::new(),
             scx: Shaper::default(),
         }
+    }
+
+    /// Sets the host segmenter used for word and line boundaries in subsequent layouts.
+    ///
+    /// Use this to share an existing segmentation implementation and its Unicode dictionaries
+    /// with Parley. Leave `complex-scripts` disabled to avoid bundling duplicate dictionaries.
+    /// Passing `None` restores the built-in ICU4X segmenters. Cloning this context retains the
+    /// configured segmenter, sharing it through the `Arc`.
+    pub fn set_text_segmenter(&mut self, segmenter: Option<Arc<dyn TextSegmenter>>) {
+        self.text_segmenter = segmenter;
     }
 
     fn resolve_style_set(
@@ -198,7 +210,10 @@ impl<B: Brush> Default for LayoutContext<B> {
 
 impl<B: Brush> Clone for LayoutContext<B> {
     fn clone(&self) -> Self {
-        // None of the internal state is visible so just return a new instance.
-        Self::new()
+        // Share configuration, but start with fresh scratch space.
+        Self {
+            text_segmenter: self.text_segmenter.clone(),
+            ..Self::new()
+        }
     }
 }

@@ -473,12 +473,24 @@ pub(crate) fn analyze_text(
     for (substring_index, (substring, word_break_strength, last)) in
         contiguous_word_break_substrings.enumerate()
     {
+        analyzer.line_boundaries.clear();
+        let default_line_boundaries = if let Some(segmenter) = options.text_segmenter {
+            segmenter.line_boundaries(substring, word_break_strength, &mut analyzer.line_boundaries);
+            None
+        } else {
+            Some(
+                data_sources
+                    .line_segmenter(word_break_strength)
+                    .segment_str(substring),
+            )
+        };
+        let mut lb_iter = default_line_boundaries
+            .into_iter()
+            .flatten()
+            .chain(analyzer.line_boundaries.iter().copied());
+
         // Fast path for text with a single word-break option.
         if substring_index == 0 && last {
-            let mut lb_iter = data_sources
-                .line_segmenter(word_break_strength)
-                .segment_str(substring);
-
             let _first = lb_iter.next();
             let second = lb_iter.next();
             if second.is_none() {
@@ -492,14 +504,10 @@ pub(crate) fn analyze_text(
             let iter = [second.unwrap(), third.unwrap()].into_iter().chain(lb_iter);
 
             line_boundary_positions.extend(iter);
-            // Remove the unnecessary boundary at the end added by ICU4X.
+            // Remove the boundary at the end of the text.
             line_boundary_positions.pop();
             break;
         }
-
-        let line_boundaries_iter = data_sources
-            .line_segmenter(word_break_strength)
-            .segment_str(substring);
 
         let mut substring_chars = substring.chars();
         if substring_index != 0 {
@@ -510,8 +518,8 @@ pub(crate) fn analyze_text(
         let last_len = substring_chars.next_back().unwrap().len_utf8();
 
         // Mark line boundaries (overriding word boundaries where present).
-        for (index, pos) in line_boundaries_iter.enumerate() {
-            // icu adds leading and trailing line boundaries, which we don't use.
+        for (index, pos) in lb_iter.enumerate() {
+            // Segmenters include leading and trailing line boundaries, which we don't use.
             if index == 0 || pos == substring.len() {
                 continue;
             }
@@ -531,7 +539,17 @@ pub(crate) fn analyze_text(
     }
 
     // Collect boundary byte positions compactly
-    let mut wb_iter = data_sources.word_segmenter().segment_str(text).peekable();
+    let default_word_boundaries = if let Some(segmenter) = options.text_segmenter {
+        segmenter.word_boundaries(text, &mut analyzer.word_boundaries);
+        None
+    } else {
+        Some(data_sources.word_segmenter().segment_str(text))
+    };
+    let mut wb_iter = default_word_boundaries
+        .into_iter()
+        .flatten()
+        .chain(analyzer.word_boundaries.iter().copied())
+        .peekable();
     let mut gb_iter = data_sources
         .grapheme_segmenter()
         .segment_str(text)
