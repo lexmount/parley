@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use crate::VerticalAlign;
+use parlance::BidiLevel;
+use parley_engine::InlineBoxBidi;
 
 /// A box to be laid out inline with text
 #[derive(PartialEq, Debug, Clone)]
@@ -38,6 +40,8 @@ pub(crate) struct LayoutInlineBox {
     /// sizes may change between building and line breaking). Unused for out-of-flow and
     /// `vertical-align: top | bottom` boxes.
     pub(crate) baseline_offset: f32,
+    pub(crate) bidi: InlineBoxBidi,
+    pub(crate) bidi_level: BidiLevel,
 }
 
 /// Whether a box is in-flow (takes up space in the layout) or out-of-flow (e.g. absolutely positioned)

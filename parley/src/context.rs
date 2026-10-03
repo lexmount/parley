@@ -26,6 +26,7 @@ pub struct LayoutContext<B: Brush = [u8; 4]> {
     pub(crate) style_table: Vec<ResolvedStyle<B>>,
     pub(crate) style_runs: Vec<StyleRun>,
     pub(crate) inline_boxes: Vec<LayoutInlineBox>,
+    pub(crate) bidi_objects: Vec<parley_engine::BidiObject>,
 
     // Reusable text analysis
     pub(crate) analyzer: Analyzer,
@@ -52,6 +53,7 @@ impl<B: Brush> LayoutContext<B> {
             style_table: vec![],
             style_runs: vec![],
             inline_boxes: vec![],
+            bidi_objects: vec![],
             analyzer: Analyzer::new(),
             analysis: Analysis::new(),
             line_break: Vec::new(),

@@ -57,4 +57,25 @@ pub(crate) fn analyze_text<B: Brush>(
         line_break_override,
     };
     lcx.analyzer.analyze(text, &options, &mut lcx.analysis);
+    if !lcx.inline_boxes.is_empty() {
+        lcx.bidi_objects.clear();
+        lcx.bidi_objects.extend(
+            lcx.inline_boxes
+                .iter()
+                .map(|input| parley_engine::BidiObject {
+                    index: input.inline_box.index,
+                    participation: input.bidi,
+                    level: parlance::BidiLevel::new(0),
+                }),
+        );
+        lcx.analyzer.resolve_inline_bidi(
+            text,
+            base_direction,
+            &mut lcx.analysis,
+            &mut lcx.bidi_objects,
+        );
+        for (input, object) in lcx.inline_boxes.iter_mut().zip(&lcx.bidi_objects) {
+            input.bidi_level = object.level;
+        }
+    }
 }

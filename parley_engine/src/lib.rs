@@ -111,6 +111,7 @@ mod analyzer;
 pub mod bidi;
 pub mod break_overrides;
 mod glyph;
+mod inline_bidi;
 pub mod itemize;
 mod lru_cache;
 pub mod shape;
@@ -124,3 +125,5 @@ pub use glyph::Glyph;
 pub use shape::atom::{Atom, Atoms, Grapheme, Graphemes, ShapedClusterGlyphs, ShapedSlice};
 pub use shape::shaped_text::{FontMetrics, ShapedRun, ShapedText};
 pub use shape::shaper::{FontInstance, FontInstanceRef, FontSelector, ShapeOptions, Shaper};
+
+pub use inline_bidi::{BidiObject, InlineBoxBidi};

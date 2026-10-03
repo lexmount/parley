@@ -11,12 +11,12 @@ use super::layout::Layout;
 
 use alloc::string::String;
 use core::ops::{Bound, Range, RangeBounds};
-use parlance::BaseDirection;
+use parlance::{BaseDirection, BidiLevel};
 use parley_engine::break_overrides::LineBreakOverrideFn;
 
-use crate::InlineBoxKind;
 use crate::inline_box::{InlineBox, LayoutInlineBox};
 use crate::resolve::{ResolvedStyle, StyleRun};
+use crate::{InlineBoxBidi, InlineBoxKind};
 
 #[derive(Clone, Copy)]
 pub(crate) struct BuilderOptions<'a> {
@@ -69,10 +69,18 @@ impl<'b, B: Brush> RangedBuilder<'b, B> {
     }
 
     pub fn push_inline_box(&mut self, inline_box: InlineBox) {
+        let bidi = default_inline_box_bidi(inline_box.kind);
+        self.push_inline_box_with_bidi(inline_box, bidi);
+    }
+
+    /// Add a box with explicit participation in bidi analysis.
+    pub fn push_inline_box_with_bidi(&mut self, inline_box: InlineBox, bidi: InlineBoxBidi) {
         self.lcx.inline_boxes.push(LayoutInlineBox {
             inline_box,
             parent_style_index: 0,
             baseline_offset: 0.,
+            bidi,
+            bidi_level: BidiLevel::new(0),
         });
     }
 
@@ -173,10 +181,18 @@ impl<'b, B: Brush> StyleRunBuilder<'b, B> {
     }
 
     pub fn push_inline_box(&mut self, inline_box: InlineBox) {
+        let bidi = default_inline_box_bidi(inline_box.kind);
+        self.push_inline_box_with_bidi(inline_box, bidi);
+    }
+
+    /// Add a box with explicit participation in bidi analysis.
+    pub fn push_inline_box_with_bidi(&mut self, inline_box: InlineBox, bidi: InlineBoxBidi) {
         self.lcx.inline_boxes.push(LayoutInlineBox {
             inline_box,
             parent_style_index: 0,
             baseline_offset: 0.,
+            bidi,
+            bidi_level: BidiLevel::new(0),
         });
     }
 
@@ -266,7 +282,13 @@ impl<'b, B: Brush> TreeBuilder<'b, B> {
         self.lcx.tree_style_builder.push_text(text);
     }
 
-    pub fn push_inline_box(&mut self, mut inline_box: InlineBox) {
+    pub fn push_inline_box(&mut self, inline_box: InlineBox) {
+        let bidi = default_inline_box_bidi(inline_box.kind);
+        self.push_inline_box_with_bidi(inline_box, bidi);
+    }
+
+    /// Add a box with explicit participation in bidi analysis.
+    pub fn push_inline_box_with_bidi(&mut self, mut inline_box: InlineBox, bidi: InlineBoxBidi) {
         self.lcx.tree_style_builder.commit_uncommitted_text();
 
         if inline_box.kind == InlineBoxKind::InFlow {
@@ -281,6 +303,8 @@ impl<'b, B: Brush> TreeBuilder<'b, B> {
             inline_box,
             parent_style_index,
             baseline_offset: 0.,
+            bidi,
+            bidi_level: BidiLevel::new(0),
         });
     }
 
@@ -339,6 +363,7 @@ fn build_into_layout<B: Brush>(
         "at least one style run is required"
     );
 
+    lcx.inline_boxes.sort_by_key(|input| input.inline_box.index);
     crate::analysis::analyze_text(
         lcx,
         text,
@@ -370,13 +395,6 @@ fn build_into_layout<B: Brush>(
         .data
         .styles
         .extend(lcx.style_table.iter().map(|s| s.as_layout_style()));
-
-    // Sort the inline boxes as subsequent code assumes that they are in text index order.
-    // Note: It's important that this is a stable sort to allow users to control the order of contiguous inline boxes
-    //
-    // TODO: consider dropping the sort and requiring `push_inline_box` callers to push boxes in text index order
-    // (as `TreeBuilder` already does).
-    lcx.inline_boxes.sort_by_key(|b| b.inline_box.index);
 
     {
         super::shape::shape_text(
@@ -420,4 +438,12 @@ fn resolve_range(range: impl RangeBounds<usize>, len: usize) -> Range<usize> {
         Bound::Excluded(n) => *n,
     };
     start.min(len)..end.min(len)
+}
+
+fn default_inline_box_bidi(kind: InlineBoxKind) -> InlineBoxBidi {
+    if kind == InlineBoxKind::InFlow {
+        InlineBoxBidi::Neutral
+    } else {
+        InlineBoxBidi::InheritPrevious
+    }
 }

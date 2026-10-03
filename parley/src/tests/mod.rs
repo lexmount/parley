@@ -5,3 +5,5 @@ mod test_analysis;
 mod test_builders;
 mod test_style_metrics;
 mod utils;
+
+mod test_inline_bidi;
