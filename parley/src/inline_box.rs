@@ -38,3 +38,34 @@ pub enum InlineBoxKind {
     /// They can be used to implement advanced layout modes such as CSS's `float`
     CustomOutOfFlow,
 }
+
+/// How an inline box participates in bidirectional analysis.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InlineBoxBidi {
+    /// Resolve the box as a neutral U+FFFC object at its text index.
+    /// The analysis character is never shaped or added to the source text.
+    Neutral,
+    /// Use the preceding item's assigned level without adding a character.
+    /// This is useful for transparent closing boundaries supplied by a host.
+    InheritPrevious,
+    /// Use the following bidi participant's level without adding a character.
+    /// If none follows, use the paragraph's base level. This is useful for
+    /// transparent opening boundaries supplied by a host.
+    InheritNext,
+}
+
+pub(crate) struct InlineBoxInput {
+    pub(crate) inline_box: InlineBox,
+    pub(crate) bidi: InlineBoxBidi,
+    pub(crate) bidi_level: Option<u8>,
+}
+
+impl InlineBoxInput {
+    pub(crate) fn new(inline_box: InlineBox, bidi: InlineBoxBidi) -> Self {
+        Self {
+            inline_box,
+            bidi,
+            bidi_level: (bidi != InlineBoxBidi::InheritPrevious).then_some(0),
+        }
+    }
+}

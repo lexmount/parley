@@ -14,7 +14,7 @@ use core::ops::{Bound, Range, RangeBounds};
 
 use crate::InlineBoxKind;
 use crate::break_overrides::LineBreakOverrideFn;
-use crate::inline_box::InlineBox;
+use crate::inline_box::{InlineBox, InlineBoxBidi, InlineBoxInput};
 use crate::resolve::{ResolvedStyle, StyleRun, tree::ItemKind};
 
 /// Builder for constructing a text layout with ranged attributes.
@@ -49,7 +49,15 @@ impl<'b, B: Brush> RangedBuilder<'b, B> {
     }
 
     pub fn push_inline_box(&mut self, inline_box: InlineBox) {
-        self.lcx.inline_boxes.push(inline_box);
+        let bidi = default_inline_box_bidi(inline_box.kind);
+        self.push_inline_box_with_bidi(inline_box, bidi);
+    }
+
+    /// Add a box with explicit participation in bidirectional analysis.
+    pub fn push_inline_box_with_bidi(&mut self, inline_box: InlineBox, bidi: InlineBoxBidi) {
+        self.lcx
+            .inline_boxes
+            .push(InlineBoxInput::new(inline_box, bidi));
     }
 
     /// Set the callback which will be called as a first provider of line breaking decisions.
@@ -150,7 +158,15 @@ impl<'b, B: Brush> StyleRunBuilder<'b, B> {
     }
 
     pub fn push_inline_box(&mut self, inline_box: InlineBox) {
-        self.lcx.inline_boxes.push(inline_box);
+        let bidi = default_inline_box_bidi(inline_box.kind);
+        self.push_inline_box_with_bidi(inline_box, bidi);
+    }
+
+    /// Add a box with explicit participation in bidirectional analysis.
+    pub fn push_inline_box_with_bidi(&mut self, inline_box: InlineBox, bidi: InlineBoxBidi) {
+        self.lcx
+            .inline_boxes
+            .push(InlineBoxInput::new(inline_box, bidi));
     }
 
     /// Set the callback which will be called as a first provider of line breaking decisions.
@@ -224,7 +240,13 @@ impl<'b, B: Brush> TreeBuilder<'b, B> {
         self.lcx.tree_style_builder.push_text(text);
     }
 
-    pub fn push_inline_box(&mut self, mut inline_box: InlineBox) {
+    pub fn push_inline_box(&mut self, inline_box: InlineBox) {
+        let bidi = default_inline_box_bidi(inline_box.kind);
+        self.push_inline_box_with_bidi(inline_box, bidi);
+    }
+
+    /// Add a box with explicit participation in bidirectional analysis.
+    pub fn push_inline_box_with_bidi(&mut self, mut inline_box: InlineBox, bidi: InlineBoxBidi) {
         if inline_box.kind == InlineBoxKind::InFlow {
             self.lcx.tree_style_builder.push_uncommitted_text(false);
             self.lcx.tree_style_builder.set_is_span_first(false);
@@ -235,7 +257,9 @@ impl<'b, B: Brush> TreeBuilder<'b, B> {
 
         // TODO: arrange type better here to factor out the index
         inline_box.index = self.lcx.tree_style_builder.current_text_len();
-        self.lcx.inline_boxes.push(inline_box);
+        self.lcx
+            .inline_boxes
+            .push(InlineBoxInput::new(inline_box, bidi));
     }
 
     pub fn set_white_space_mode(&mut self, white_space_collapse: WhiteSpaceCollapse) {
@@ -302,6 +326,8 @@ fn build_into_layout<B: Brush>(
         "at least one style run is required"
     );
 
+    // Bidi analysis and shaping must see the same stable object order.
+    lcx.inline_boxes.sort_by_key(|input| input.inline_box.index);
     crate::analysis::analyze_text(lcx, text, line_break_override);
 
     layout.data.clear();
@@ -324,10 +350,6 @@ fn build_into_layout<B: Brush>(
         .styles
         .extend(lcx.style_table.iter().map(|s| s.as_layout_style()));
 
-    // Sort the inline boxes as subsequent code assumes that they are in text index order.
-    // Note: It's important that this is a stable sort to allow users to control the order of contiguous inline boxes
-    lcx.inline_boxes.sort_by_key(|b| b.index);
-
     {
         let query = fcx.collection.query(&mut fcx.source_cache);
         super::shape::shape_text(
@@ -336,7 +358,11 @@ fn build_into_layout<B: Brush>(
             &lcx.style_table,
             &lcx.inline_boxes,
             &lcx.info,
-            lcx.bidi.levels(),
+            if lcx.text_bidi_levels.is_empty() {
+                lcx.bidi.levels()
+            } else {
+                &lcx.text_bidi_levels
+            },
             &mut lcx.scx,
             text,
             layout,
@@ -344,11 +370,23 @@ fn build_into_layout<B: Brush>(
         );
     }
 
-    // Move inline boxes into the layout
+    // Analysis metadata stays in the reusable context, not the public layout.
     layout.data.inline_boxes.clear();
-    core::mem::swap(&mut layout.data.inline_boxes, &mut lcx.inline_boxes);
+    layout.data.inline_boxes.extend(
+        lcx.inline_boxes
+            .iter()
+            .map(|input| input.inline_box.clone()),
+    );
 
     layout.data.finish();
+}
+
+fn default_inline_box_bidi(kind: InlineBoxKind) -> InlineBoxBidi {
+    if kind == InlineBoxKind::InFlow {
+        InlineBoxBidi::Neutral
+    } else {
+        InlineBoxBidi::InheritPrevious
+    }
 }
 
 fn resolve_range(range: impl RangeBounds<usize>, len: usize) -> Range<usize> {

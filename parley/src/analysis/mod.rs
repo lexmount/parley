@@ -7,6 +7,7 @@ use alloc::vec::Vec;
 use core::marker::PhantomData;
 
 use crate::break_overrides::{LineBreakContext, LineBreakOverrideFn};
+use crate::inline_box::InlineBoxBidi;
 use crate::resolve::StyleRun;
 use crate::{Brush, LayoutContext, WordBreak};
 
@@ -536,15 +537,98 @@ pub(crate) fn analyze_text<B: Brush>(
         });
 
     if needs_bidi_resolution {
-        lcx.bidi.resolve(
-            text.chars().zip(
-                lcx.info
-                    .iter()
-                    .map(|info| (info.0.bidi_class, info.0.bracket)),
-            ),
-            None,
-        );
+        if lcx
+            .inline_boxes
+            .iter()
+            .any(|input| input.bidi != InlineBoxBidi::InheritPrevious)
+        {
+            resolve_inline_box_levels(lcx, text);
+        } else {
+            lcx.bidi.resolve(
+                text.chars().zip(
+                    lcx.info
+                        .iter()
+                        .map(|info| (info.0.bidi_class, info.0.bracket)),
+                ),
+                None,
+            );
+        }
     }
+}
+
+fn resolve_inline_box_levels<B: Brush>(lcx: &mut LayoutContext<B>, text: &str) {
+    // Virtual object characters are present only in the UBA input. They do
+    // not enter shaping, segmentation, glyph advances, or source offsets.
+    let object = '\u{fffc}';
+    let object_properties = (
+        lcx.analysis_data_sources.properties(object).bidi_class(),
+        lcx.analysis_data_sources.brackets().get(object),
+    );
+    let mut characters = text.char_indices().zip(&lcx.info).peekable();
+    let mut boxes = lcx.inline_boxes.iter().peekable();
+    let inputs = core::iter::from_fn(move || {
+        loop {
+            let box_before_character = boxes.peek().is_some_and(|input| {
+                characters
+                    .peek()
+                    .is_none_or(|((byte, _), _)| input.inline_box.index <= *byte)
+            });
+            if box_before_character {
+                let input = boxes.next()?;
+                if input.bidi == InlineBoxBidi::Neutral {
+                    return Some((object, object_properties));
+                }
+            } else {
+                return characters.next().map(|((_, character), (info, _))| {
+                    (character, (info.bidi_class, info.bracket))
+                });
+            }
+        }
+    });
+    lcx.bidi.resolve(inputs, None);
+
+    let mut levels = lcx.bidi.levels().iter().copied().peekable();
+    let mut boxes = lcx.inline_boxes.iter_mut().peekable();
+    let mut previous = lcx.bidi.base_level();
+    lcx.text_bidi_levels.reserve(lcx.info.len());
+    for (byte, _) in text.char_indices() {
+        while boxes
+            .peek()
+            .is_some_and(|input| input.inline_box.index <= byte)
+        {
+            let input = boxes.next().unwrap();
+            match input.bidi {
+                InlineBoxBidi::Neutral => {
+                    previous = levels.next().unwrap();
+                    input.bidi_level = Some(previous);
+                }
+                InlineBoxBidi::InheritPrevious => input.bidi_level = Some(previous),
+                InlineBoxBidi::InheritNext => {
+                    input.bidi_level =
+                        Some(levels.peek().copied().unwrap_or(lcx.bidi.base_level()));
+                }
+            }
+            // An empty host box can have a leading and a closing boundary
+            // at the same index. Its close inherits that leading item too.
+            previous = input.bidi_level.unwrap();
+        }
+        previous = levels.next().unwrap();
+        lcx.text_bidi_levels.push(previous);
+    }
+    for input in boxes {
+        match input.bidi {
+            InlineBoxBidi::Neutral => {
+                previous = levels.next().unwrap();
+                input.bidi_level = Some(previous);
+            }
+            InlineBoxBidi::InheritPrevious => input.bidi_level = Some(previous),
+            InlineBoxBidi::InheritNext => {
+                input.bidi_level = Some(levels.peek().copied().unwrap_or(lcx.bidi.base_level()));
+            }
+        }
+        previous = input.bidi_level.unwrap();
+    }
+    debug_assert_eq!(levels.len(), 0);
 }
 
 /// All characters contribute to shaping except:

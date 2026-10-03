@@ -7,6 +7,154 @@ use alloc::{vec, vec::Vec};
 use fontique::FontWeight;
 use icu_properties::props::{GraphemeClusterBreak, Script};
 
+#[test]
+fn inline_objects_resolve_at_their_own_bidi_context_without_shaping_characters() {
+    use crate::layout::data::LayoutItemKind;
+    use crate::{InlineBox, InlineBoxBidi, InlineBoxKind};
+
+    for text in [
+        "\u{202e}x\u{202c}",
+        "\u{202e}x\u{202c}\n\u{202e}x\u{202c}",
+        "\u{202b}x \u{202c}",
+        "\u{2067}\u{202e}x\u{202c}\u{2069}",
+        "\u{202e}😀\u{202c}",
+    ] {
+        let mut lcx = LayoutContext::<[u8; 4]>::new();
+        let mut fcx = FontContext::new();
+        let mut builder = lcx.ranged_builder(&mut fcx, text, 1.0, false);
+        // Deliberately submit the objects out of text-index order. Same-index
+        // boundaries must stay transparent and leave the two objects neutral.
+        for (id, index, bidi) in [
+            (2, text.len(), InlineBoxBidi::Neutral),
+            (0, text.len(), InlineBoxBidi::InheritPrevious),
+            (1, text.len(), InlineBoxBidi::Neutral),
+        ] {
+            builder.push_inline_box_with_bidi(
+                InlineBox {
+                    id,
+                    kind: InlineBoxKind::InFlow,
+                    index,
+                    width: 10.0,
+                    height: 20.0,
+                },
+                bidi,
+            );
+        }
+        let layout = builder.build(text);
+        let objects = layout
+            .data
+            .items
+            .iter()
+            .filter(|item| item.kind == LayoutItemKind::InlineBox)
+            .map(|item| (layout.data.inline_boxes[item.index].id, item.bidi_level))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            objects.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            [2, 0, 1]
+        );
+        assert_eq!(objects[0].1, 0, "outside object: {text:?}");
+        assert_eq!(objects[2].1, 0, "second outside object: {text:?}");
+        assert_eq!(layout.data.text_len, text.len());
+        assert_eq!(lcx.info.len(), text.chars().count());
+        assert_eq!(lcx.text_bidi_levels.len(), text.chars().count());
+        assert_eq!(lcx.bidi.levels().len(), text.chars().count() + 2);
+
+        // Reusing the context must not retain the previous object's levels.
+        let plain = "ab";
+        let mut builder = lcx.ranged_builder(&mut fcx, plain, 1.0, false);
+        builder.push_inline_box(InlineBox {
+            id: 3,
+            kind: InlineBoxKind::InFlow,
+            index: 1,
+            width: 10.0,
+            height: 20.0,
+        });
+        let plain_layout = builder.build(plain);
+        assert_eq!(plain_layout.data.text_len, 2);
+        assert!(lcx.text_bidi_levels.is_empty());
+        assert!(
+            plain_layout
+                .data
+                .items
+                .iter()
+                .all(|item| item.bidi_level == 0)
+        );
+    }
+}
+
+#[test]
+fn inline_objects_inside_overrides_and_isolates_keep_their_own_direction() {
+    use crate::layout::data::LayoutItemKind;
+    use crate::{InlineBox, InlineBoxKind};
+
+    for text in ["\u{202e}x\u{202c}", "\u{2067}\u{202e}x\u{202c}\u{2069}"] {
+        let mut lcx = LayoutContext::<[u8; 4]>::new();
+        let mut fcx = FontContext::new();
+        let index = text.find('x').unwrap();
+        let mut builder = lcx.ranged_builder(&mut fcx, text, 1.0, false);
+        builder.push_inline_box(InlineBox {
+            id: 0,
+            kind: InlineBoxKind::InFlow,
+            index,
+            width: 10.0,
+            height: 20.0,
+        });
+        let layout = builder.build(text);
+        let object = layout
+            .data
+            .items
+            .iter()
+            .find(|item| item.kind == LayoutItemKind::InlineBox)
+            .unwrap();
+        assert_eq!(object.bidi_level % 2, 1, "inside object: {text:?}");
+        assert_eq!(layout.data.inline_boxes[object.index].index, index);
+        assert_eq!(layout.data.text_len, text.len());
+    }
+}
+
+#[test]
+fn transparent_boundaries_follow_neighbor_levels_including_empty_boxes() {
+    use crate::layout::data::LayoutItemKind;
+    use crate::{InlineBox, InlineBoxBidi, InlineBoxKind};
+
+    let text = "x\n\u{202b}x\u{202c}";
+    let start = text.rfind('x').unwrap();
+    let mut lcx = LayoutContext::<[u8; 4]>::new();
+    let mut fcx = FontContext::new();
+    let mut builder = lcx.ranged_builder(&mut fcx, text, 1.0, false);
+    for (id, index, bidi) in [
+        (0, start, InlineBoxBidi::InheritNext),
+        (1, start + 1, InlineBoxBidi::InheritPrevious),
+        (2, start + 1, InlineBoxBidi::Neutral),
+        (3, start + 1, InlineBoxBidi::InheritPrevious),
+        (4, text.len(), InlineBoxBidi::InheritNext),
+        (5, text.len(), InlineBoxBidi::InheritPrevious),
+        (6, text.len(), InlineBoxBidi::Neutral),
+    ] {
+        builder.push_inline_box_with_bidi(
+            InlineBox {
+                id,
+                kind: InlineBoxKind::InFlow,
+                index,
+                width: 0.0,
+                height: 0.0,
+            },
+            bidi,
+        );
+    }
+    let layout = builder.build(text);
+    let levels = layout
+        .data
+        .items
+        .iter()
+        .filter(|item| item.kind == LayoutItemKind::InlineBox)
+        .map(|item| item.bidi_level)
+        .collect::<Vec<_>>();
+    assert_eq!(levels, [2, 2, 1, 1, 0, 0, 0]);
+    assert_eq!(layout.data.text_len, text.len());
+    assert_eq!(lcx.bidi.levels().len(), text.chars().count() + 2);
+}
+
 #[derive(Default)]
 struct TestContext {
     pub layout_context: LayoutContext,
