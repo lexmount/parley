@@ -7,7 +7,7 @@ use core::ops::Range;
 
 use alloc::{vec, vec::Vec};
 
-use parley_engine::{Analysis, AnalysisDataSources, Analyzer, LineBreakConfig, Shaper};
+use parley_engine::{Analysis, AnalysisDataSources, Analyzer, BidiObject, LineBreakConfig, Shaper};
 
 use super::FontContext;
 use super::builder::{BuilderOptions, RangedBuilder, StyleRunBuilder};
@@ -30,6 +30,7 @@ pub struct LayoutContext<B: Brush = [u8; 4]> {
     // Reusable text analysis
     pub(crate) analyzer: Analyzer,
     pub(crate) analysis: Analysis,
+    pub(crate) bidi_objects: Vec<BidiObject>,
     pub(crate) line_break: Vec<(Range<usize>, LineBreakConfig)>,
     pub(crate) break_spaces: Vec<Range<usize>>,
 
@@ -54,6 +55,7 @@ impl<B: Brush> LayoutContext<B> {
             inline_boxes: vec![],
             analyzer: Analyzer::new(),
             analysis: Analysis::new(),
+            bidi_objects: Vec::new(),
             line_break: Vec::new(),
             break_spaces: Vec::new(),
             ranged_style_builder: RangedStyleBuilder::default(),

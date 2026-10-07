@@ -11,7 +11,7 @@ use super::layout::Layout;
 
 use alloc::string::String;
 use core::ops::{Bound, Range, RangeBounds};
-use parlance::BaseDirection;
+use parlance::{BaseDirection, BidiLevel};
 use parley_engine::break_overrides::LineBreakOverrideFn;
 
 use crate::InlineBoxKind;
@@ -68,9 +68,15 @@ impl<'b, B: Brush> RangedBuilder<'b, B> {
         self.lcx.ranged_style_builder.push(resolved, range);
     }
 
+    /// Adds a box at the source-text offset specified by [`InlineBox::index`].
+    ///
+    /// Building the layout panics if the offset is not a character boundary within
+    /// the source text, including its end. Boxes can be pushed in any order; boxes
+    /// at the same offset retain their insertion order before bidi reordering.
     pub fn push_inline_box(&mut self, inline_box: InlineBox) {
         self.lcx.inline_boxes.push(LayoutInlineBox {
             inline_box,
+            bidi_level: BidiLevel::new(0),
             parent_style_index: 0,
             baseline_offset: 0.,
         });
@@ -172,9 +178,15 @@ impl<'b, B: Brush> StyleRunBuilder<'b, B> {
         self.cursor = range.end;
     }
 
+    /// Adds a box at the source-text offset specified by [`InlineBox::index`].
+    ///
+    /// Building the layout panics if the offset is not a character boundary within
+    /// the source text, including its end. Boxes can be pushed in any order; boxes
+    /// at the same offset retain their insertion order before bidi reordering.
     pub fn push_inline_box(&mut self, inline_box: InlineBox) {
         self.lcx.inline_boxes.push(LayoutInlineBox {
             inline_box,
+            bidi_level: BidiLevel::new(0),
             parent_style_index: 0,
             baseline_offset: 0.,
         });
@@ -266,6 +278,10 @@ impl<'b, B: Brush> TreeBuilder<'b, B> {
         self.lcx.tree_style_builder.push_text(text);
     }
 
+    /// Adds a box after the text pushed so far.
+    ///
+    /// The supplied [`InlineBox::index`] is ignored. Its offset is computed from
+    /// the committed text after whitespace handling.
     pub fn push_inline_box(&mut self, mut inline_box: InlineBox) {
         self.lcx.tree_style_builder.commit_uncommitted_text();
 
@@ -279,6 +295,7 @@ impl<'b, B: Brush> TreeBuilder<'b, B> {
         let parent_style_index = self.lcx.tree_style_builder.resolve_current_style_id();
         self.lcx.inline_boxes.push(LayoutInlineBox {
             inline_box,
+            bidi_level: BidiLevel::new(0),
             parent_style_index,
             baseline_offset: 0.,
         });
@@ -339,6 +356,11 @@ fn build_into_layout<B: Brush>(
         "at least one style run is required"
     );
 
+    // Sort the inline boxes before bidi analysis and shaping.
+    // Keep this stable so contiguous boxes participate in insertion order.
+    // TODO: consider requiring source order, as `TreeBuilder` already does.
+    lcx.inline_boxes.sort_by_key(|b| b.inline_box.index);
+
     crate::analysis::analyze_text(
         lcx,
         text,
@@ -370,13 +392,6 @@ fn build_into_layout<B: Brush>(
         .data
         .styles
         .extend(lcx.style_table.iter().map(|s| s.as_layout_style()));
-
-    // Sort the inline boxes as subsequent code assumes that they are in text index order.
-    // Note: It's important that this is a stable sort to allow users to control the order of contiguous inline boxes
-    //
-    // TODO: consider dropping the sort and requiring `push_inline_box` callers to push boxes in text index order
-    // (as `TreeBuilder` already does).
-    lcx.inline_boxes.sort_by_key(|b| b.inline_box.index);
 
     {
         super::shape::shape_text(

@@ -19,7 +19,7 @@ use crate::util::{nearly_eq, nearly_zero};
 use crate::{FontContext, FontData, Spacing};
 
 use fontique::{self, Query, QueryFamily, QueryFont};
-use parlance::{BidiLevel, GenericFamily, Tag};
+use parlance::{GenericFamily, Tag};
 
 /// If these font features are passed to the shaper, optional ligatures are not applied.
 ///
@@ -63,10 +63,9 @@ pub(crate) fn shape_text<'a, B: Brush>(
 
     // Do nothing if there is no text or styles (there should always be a default style)
     if text.is_empty() || styles.is_empty() {
-        // Process any remaining inline boxes whose index is greater than the length of the text
-        for box_idx in 0..inline_boxes.len() {
+        for (box_idx, input) in inline_boxes.iter().enumerate() {
             // Push the box to the list of items
-            layout.data.push_inline_box(box_idx, BidiLevel::new(0));
+            layout.data.push_inline_box(box_idx, input.bidi_level);
         }
         return;
     }
@@ -190,11 +189,7 @@ pub(crate) fn shape_text<'a, B: Brush>(
         &mut layout.data.shaped_text,
     );
 
-    let mut inline_box_iter = inline_boxes
-        .iter()
-        .map(|b| &b.inline_box)
-        .enumerate()
-        .peekable();
+    let mut inline_box_iter = inline_boxes.iter().enumerate().peekable();
     for shaped_run_idx in 0..layout.data.shaped_text.runs().len() {
         let shaped_run = &layout.data.shaped_text.runs()[shaped_run_idx];
         let run_text_byte_start = shaped_run.range.byte_range.start;
@@ -202,18 +197,9 @@ pub(crate) fn shape_text<'a, B: Brush>(
         let run_style = &styles[usize::from(run_style_index)];
 
         // Push inline boxes positioned before the start of this item.
-        //
-        // TODO: this lets the inline box take the bidi level of the previous run, but in principle
-        // inline boxes should be included in bidi analysis as an object replacement character
-        // (U+FFFC). The box should then take the bidi level of that character.
-        let prev_bidi_level = if shaped_run_idx > 0 {
-            layout.data.shaped_text.runs()[&shaped_run_idx - 1].bidi_level
-        } else {
-            BidiLevel::new(0)
-        };
         while let Some((box_idx, inline_box)) = inline_box_iter.peek() {
-            if inline_box.index <= run_text_byte_start {
-                layout.data.push_inline_box(*box_idx, prev_bidi_level);
+            if inline_box.inline_box.index <= run_text_byte_start {
+                layout.data.push_inline_box(*box_idx, inline_box.bidi_level);
                 inline_box_iter.next();
             } else {
                 break;
@@ -233,19 +219,9 @@ pub(crate) fn shape_text<'a, B: Brush>(
         );
     }
 
-    // Process any remaining inline boxes whose index is greater than the length of the text
-    //
-    // Give the box the same bidi level as the last text run (or else default to 0 if there is no
-    // text run).
-    let bidi_level = layout
-        .data
-        .shaped_text
-        .runs()
-        .last()
-        .map(|r| r.bidi_level)
-        .unwrap_or(BidiLevel::new(0));
-    for (box_idx, _inline_box) in inline_box_iter {
-        layout.data.push_inline_box(box_idx, bidi_level);
+    // Process boxes at the end of the source text, including after unshaped controls.
+    for (box_idx, input) in inline_box_iter {
+        layout.data.push_inline_box(box_idx, input.bidi_level);
     }
 }
 

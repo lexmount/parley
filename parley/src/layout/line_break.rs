@@ -1711,12 +1711,12 @@ fn commit_line<B: Brush>(
     // The line's source text range, as the union of the ranges of the text runs committed to it.
     let mut text_start = usize::MAX;
     let mut text_end = 0;
-    // Mark line as needing bidi re-ordering if it contains any runs with non-zero bidi level
-    // (zero is the default level, so this is equivalent to marking lines that have multiple levels)
+    // Mark the line as needing bidi reordering if it contains any item with a non-zero bidi level.
     let mut needs_reorder = false;
     for (i, item) in items_to_commit.iter().enumerate() {
         match item.kind {
             LayoutItemKind::InlineBox => {
+                needs_reorder |= item.bidi_level != BidiLevel::new(0);
                 lines.line_items.push(LineItemData {
                     kind: LayoutItemKind::InlineBox,
                     index: item.index,
@@ -1809,8 +1809,7 @@ fn commit_line<B: Brush>(
     // hanging whitespace is not stretched by justification.
     let num_justification_opportunities = state.num_word_separators - hanging_opportunities;
 
-    // Reorder the items within the line (if required). Reordering is required if the line contains
-    // a mix of bidi levels (a mix of LTR and RTL text)
+    // Reorder the line items according to their resolved bidi levels.
     if needs_reorder && end_item_idx - start_item_idx > 1 {
         reorder_line_items(&mut lines.line_items[start_item_idx..end_item_idx]);
     }

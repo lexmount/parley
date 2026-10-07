@@ -5,7 +5,7 @@ use crate::{Brush, LayoutContext, WhiteSpaceCollapse};
 
 use parley_engine::break_overrides::LineBreakOverrideFn;
 
-use parley_engine::{AnalysisOptions, LineBreakConfig};
+use parley_engine::{AnalysisOptions, BidiObject, LineBreakConfig};
 
 use parlance::BaseDirection;
 
@@ -15,7 +15,11 @@ pub(crate) fn analyze_text<B: Brush>(
     base_direction: BaseDirection,
     line_break_override: Option<&LineBreakOverrideFn>,
 ) {
-    let text = if text.is_empty() { " " } else { text };
+    let text = if text.is_empty() && lcx.inline_boxes.is_empty() {
+        " "
+    } else {
+        text
+    };
 
     // Collect the style runs' line break configurations. Gaps use the default configuration, so
     // only non-default configurations need an entry, and adjacent equal configurations are merged.
@@ -56,5 +60,19 @@ pub(crate) fn analyze_text<B: Brush>(
         break_spaces: &lcx.break_spaces,
         line_break_override,
     };
-    lcx.analyzer.analyze(text, &options, &mut lcx.analysis);
+    lcx.bidi_objects.clear();
+    if lcx.inline_boxes.is_empty() {
+        lcx.analyzer.analyze(text, &options, &mut lcx.analysis);
+        return;
+    }
+    lcx.bidi_objects.extend(
+        lcx.inline_boxes
+            .iter()
+            .map(|input| BidiObject::new(input.inline_box.index)),
+    );
+    lcx.analyzer
+        .analyze_with_objects(text, &options, &mut lcx.bidi_objects, &mut lcx.analysis);
+    for (input, object) in lcx.inline_boxes.iter_mut().zip(&lcx.bidi_objects) {
+        input.bidi_level = object.level();
+    }
 }
