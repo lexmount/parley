@@ -14,7 +14,7 @@ use parley_engine::{
     ShapedRun, ShapedSlice,
 };
 
-/// Sequence of clusters with a single font and style.
+/// Sequence of shaped clusters using a single font.
 pub struct Run<'a, B: Brush> {
     pub(crate) layout: &'a Layout<B>,
     /// The index of the line this run is part of.
@@ -115,6 +115,16 @@ impl<'a, B: Brush> Run<'a, B> {
             .normalized_coords()
             .get(self.shaped.normalized_coords_range.clone())
             .unwrap_or(&[])
+    }
+
+    /// Returns the line height resolved from the full shaped run's first character's
+    /// style and its font metrics.
+    ///
+    /// Styles within a shaped run can have different line heights. This value uses
+    /// the same first character even when this run is scoped to one line. Use
+    /// [`crate::Line::metrics`] for the containing line's metrics.
+    pub fn line_height(&self) -> f32 {
+        self.data.line_height
     }
 
     /// Returns metrics for the run.
