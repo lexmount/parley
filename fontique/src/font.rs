@@ -108,8 +108,9 @@ impl FontInfo {
                 synth.vars[len] = (Tag::new(b"wght"), weight.value());
                 len += 1;
             }
-        } else if weight.value() > self.weight.value() + 200.0 {
-            synth.embolden = true;
+        } else {
+            synth.weight_increase = (weight.value() - self.weight.value()).max(0.0);
+            synth.embolden = synth.embolden_with_threshold(200.0);
         }
         if self.style != style {
             match style {
@@ -347,6 +348,7 @@ pub struct Synthesis {
     vars: [(Tag, f32); 3],
     len: u8,
     embolden: bool,
+    weight_increase: f32,
     skew: i8,
 }
 
@@ -368,6 +370,17 @@ impl Synthesis {
     /// Returns `true` if the scaler should apply a faux bold.
     pub fn embolden(&self) -> bool {
         self.embolden
+    }
+
+    /// Returns whether a static face needs faux bold under a host's threshold.
+    ///
+    /// The requested weight must exceed the matched face's weight by more than
+    /// `minimum_weight_increase`, which is clamped to zero. The matched weight
+    /// includes registration overrides. Faces with a `wght` axis return false.
+    /// [`Self::embolden`] retains the default threshold of 200; hosts can use
+    /// this method when they apply their own weight and synthesis policies.
+    pub fn embolden_with_threshold(&self, minimum_weight_increase: f32) -> bool {
+        self.weight_increase > minimum_weight_increase.max(0.0)
     }
 
     /// Returns a skew angle for faux italic/oblique, if requested.
@@ -558,5 +571,29 @@ mod tests {
         );
         assert!(synthesis.embolden());
         assert!(synthesis.variation_settings().is_empty());
+    }
+
+    #[test]
+    fn host_embolden_threshold_retains_face_overrides_and_variable_axes() {
+        let mut font = font_info(ROBOTO);
+        for increase in [0.0, 100.0, 200.0, 201.0] {
+            let synthesis = font.synthesis(
+                font.width(),
+                font.style(),
+                FontWeight::new(font.weight().value() + increase),
+            );
+            assert_eq!(synthesis.embolden(), increase > 200.0);
+            assert_eq!(synthesis.embolden_with_threshold(0.0), increase > 0.0);
+        }
+        font.apply_override(&FontInfoOverride {
+            weight: Some(FontWeight::new(600.0)),
+            ..Default::default()
+        });
+        let synthesis = font.synthesis(font.width(), font.style(), FontWeight::new(600.0));
+        assert!(!synthesis.embolden_with_threshold(0.0));
+
+        let variable = font_info(ROBOTO_FLEX);
+        let synthesis = variable.synthesis(variable.width(), variable.style(), FontWeight::BLACK);
+        assert!(!synthesis.embolden_with_threshold(0.0));
     }
 }
