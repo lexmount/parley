@@ -7,12 +7,89 @@
 
 use crate::{ColorBrush, FONT_FAMILY_LIST, Sample, get_samples, with_contexts};
 use parley::{
-    Alignment, AlignmentOptions, FontFamily, FontStyle, FontWeight, Layout, PositionedLayoutItem,
-    StyleProperty,
+    Alignment, AlignmentOptions, BaseDirection, FontFamily, FontStyle, FontWeight, InlineBox,
+    InlineBoxKind, Layout, PositionedLayoutItem, StyleProperty, VerticalAlign,
 };
 use std::hint::black_box;
 use std::ops::Range;
 use tango_bench::{Benchmark, benchmark_fn};
+
+/// Benchmark building LTR and mixed-direction text with zero, one or many inline objects.
+///
+/// The many-object cases also measure line breaking and alignment without rebuilding.
+pub fn inline_boxes() -> Vec<Benchmark> {
+    let mut benchmarks = Vec::new();
+    for (label, sample) in [("LTR", "hello world "), ("Mixed RTL", "hello אב 123 ")] {
+        let text = sample.repeat(100);
+        let boundaries = text
+            .char_indices()
+            .map(|(byte, _)| byte)
+            .collect::<Vec<_>>();
+        for count in [0, 1, 100] {
+            let indices = (1..=count)
+                .map(|i| boundaries[i * boundaries.len() / (count + 1)])
+                .collect::<Vec<_>>();
+            let build_text = text.clone();
+            let build_indices = indices.clone();
+            benchmarks.push(benchmark_fn(
+                format!("Inline Boxes - {label}, {count} objects"),
+                move |b| {
+                    let text = build_text.clone();
+                    let indices = build_indices.clone();
+                    b.iter(move || black_box(build_inline_boxes(&text, &indices)))
+                },
+            ));
+            if count == 100 {
+                let break_text = text.clone();
+                let break_indices = indices.clone();
+                benchmarks.push(benchmark_fn(
+                    format!("Inline Boxes Break - {label}, {count} objects"),
+                    move |b| {
+                        let mut layout = build_inline_boxes(&break_text, &break_indices);
+                        b.iter(move || {
+                            layout.break_all_lines(Some(200.0));
+                            black_box((layout.len(), layout.width(), layout.height()));
+                        })
+                    },
+                ));
+
+                let align_text = text.clone();
+                benchmarks.push(benchmark_fn(
+                    format!("Inline Boxes Align - {label}, {count} objects"),
+                    move |b| {
+                        let mut layout = build_inline_boxes(&align_text, &indices);
+                        layout.break_all_lines(Some(200.0));
+                        b.iter(move || {
+                            layout.align(Alignment::Justify, AlignmentOptions::default());
+                            black_box(&layout);
+                        })
+                    },
+                ));
+            }
+        }
+    }
+    benchmarks
+}
+
+fn build_inline_boxes(text: &str, indices: &[usize]) -> Layout<ColorBrush> {
+    with_contexts(|font_cx, layout_cx| {
+        let mut builder = layout_cx.ranged_builder(font_cx, text, 1.0, false);
+        builder.push_default(FontFamily::from(FONT_FAMILY_LIST));
+        builder.set_base_direction(BaseDirection::Ltr);
+        for (ordinal, &index) in indices.iter().enumerate() {
+            builder.push_inline_box(InlineBox {
+                id: ordinal as u64,
+                index,
+                kind: InlineBoxKind::InFlow,
+                width: 10.0,
+                height: 10.0,
+                baseline: None,
+                vertical_align: VerticalAlign::BASELINE,
+            });
+        }
+        builder.build(text)
+    })
+}
 
 /// Benchmark for default style.
 pub fn defaults() -> Vec<Benchmark> {
@@ -388,6 +465,9 @@ fn walk_items(layout: &Layout<ColorBrush>) -> (usize, f32) {
 /// sequencing that'll likely be used by clients (i.e., measure possible sizes, and later on line
 /// break once the target size is known).
 pub fn content_widths() -> Vec<Benchmark> {
+    const WORD_SPACING: f32 = 2.;
+    const LETTER_SPACING: f32 = 1.;
+
     let samples = get_samples();
 
     let mut benchmarks = Vec::new();
@@ -413,6 +493,29 @@ pub fn content_widths() -> Vec<Benchmark> {
             ),
             |b| {
                 let layout = build_layout(&sample.text, styled_spans(&sample.text));
+                b.iter(move || black_box(layout.calculate_content_widths()))
+            },
+        ));
+    }
+
+    for sample in samples
+        .iter()
+        .filter(|sample| sample.modification == "8000 characters")
+    {
+        benchmarks.push(benchmark_fn(
+            format!(
+                "Content Widths - {} {}, spacing",
+                sample.name, sample.modification
+            ),
+            |b| {
+                let text_range = 0..sample.text.len();
+                let layout = build_layout(
+                    &sample.text,
+                    [
+                        (StyleProperty::WordSpacing(WORD_SPACING), text_range.clone()),
+                        (StyleProperty::LetterSpacing(LETTER_SPACING), text_range),
+                    ],
+                );
                 b.iter(move || black_box(layout.calculate_content_widths()))
             },
         ));

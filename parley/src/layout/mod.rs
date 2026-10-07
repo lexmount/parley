@@ -3,14 +3,13 @@
 
 //! Layout types.
 
-#[cfg(feature = "accesskit")]
-pub(crate) mod accessibility;
 mod alignment;
 mod cluster;
 mod line;
 mod line_break;
 mod run;
 mod spacing;
+pub(crate) mod style_metrics;
 mod whitespace;
 
 // TODO - Add to allowed lint set?
@@ -24,8 +23,6 @@ pub use parley_engine::{FontMetrics, Glyph};
 
 pub(crate) mod data;
 
-#[cfg(feature = "accesskit")]
-pub use accessibility::LayoutAccessibility;
 pub use alignment::{Alignment, AlignmentOptions};
 pub use cluster::{Affinity, Cluster, ClusterPath, ClusterSide};
 pub use data::BreakReason;
@@ -47,12 +44,14 @@ pub use crate::editing::{Cursor, Selection};
 // TODO - Move the following to `style` module and submodules.
 
 use crate::style::Brush;
-use crate::{LineHeight, OverflowWrap, TextWrapMode, WhiteSpaceCollapse};
+use crate::{LineHeight, OverflowWrap, TextWrapMode, VerticalAlign, WhiteSpaceCollapse};
 
-#[allow(clippy::partial_pub_fields)]
 /// Style properties.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Style<B: Brush> {
+    /// Index of the style of the enclosing span in [`Layout::styles`]. The root style (index 0)
+    /// refers to itself.
+    pub(crate) parent: u16,
     /// Brush for drawing glyphs.
     pub brush: B,
     /// Underline decoration.
@@ -61,15 +60,19 @@ pub struct Style<B: Brush> {
     pub strikethrough: Option<Decoration<B>>,
     /// Partially resolved line height, either in in layout units or dependent on metrics
     pub(crate) line_height: LineHeight,
+    /// Vertical alignment of this style's span within the line
+    pub(crate) vertical_align: VerticalAlign,
     /// Per-cluster overflow-wrap setting
     pub(crate) overflow_wrap: OverflowWrap,
     /// Per-cluster text-wrap-mode setting
     pub(crate) text_wrap_mode: TextWrapMode,
     /// Per-cluster whitespace collapsing and hanging behavior.
     pub(crate) white_space_collapse: WhiteSpaceCollapse,
-    #[cfg(feature = "accesskit")]
-    /// Locale if any, so we can set the corresponding AccessKit property
-    pub(crate) locale: Option<fontique::Language>,
+    /// The locale of the text, if any.
+    ///
+    /// This is useful for consumers exposing the text to assistive technologies,
+    /// which use it to select an appropriate pronunciation.
+    pub locale: Option<fontique::Language>,
 }
 
 /// Underline or strikethrough decoration.
@@ -105,4 +108,22 @@ pub struct IndentOptions {
     /// If `true`, inverts which lines are indented: continuation lines are indented
     /// instead of the first line(s). Corresponds to the CSS `hanging` keyword. Defaults to `false`.
     pub hanging: bool,
+}
+
+/// The inherent metrics of a span.
+///
+/// These metrics are based only on the [first available font](fontique::Query::first_available_font), and don't
+/// take into account any fallback fonts (in contrast to, say, [`LineMetrics`]).
+///
+/// This is currently only available for the root span,
+/// as [`Layout::root_span_metrics`](crate::Layout::root_span_metrics).
+#[derive(Copy, Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct SpanMetrics {
+    /// Typographic ascent of the span's first available font.
+    pub ascent: f32,
+    /// Typographic descent of the span's first available font.
+    pub descent: f32,
+    /// Typographic x-height of the span's first available font.
+    pub x_height: f32,
 }

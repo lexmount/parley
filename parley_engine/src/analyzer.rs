@@ -5,7 +5,7 @@
 
 use core::ops::Range;
 
-use parlance::{BaseDirection, WordBreak};
+use parlance::{BaseDirection, BidiLevel, Language, LineBreak, WordBreak};
 
 use crate::{bidi::BidiResolver, break_overrides::LineBreakOverrideFn};
 
@@ -23,6 +23,53 @@ impl core::fmt::Debug for Analyzer {
     }
 }
 
+/// An inline object participating in bidirectional analysis as a virtual U+FFFC.
+///
+/// The replacement character is not inserted into the source text and does not
+/// participate in segmentation or shaping.
+#[derive(Clone, Copy, Debug)]
+pub struct BidiObject {
+    index: usize,
+    level: BidiLevel,
+}
+
+impl BidiObject {
+    /// Creates an object anchored at `index` in the source text.
+    ///
+    /// See [`Self::index`] for the placement semantics and valid offsets.
+    #[inline]
+    pub fn new(index: usize) -> Self {
+        Self {
+            index,
+            level: BidiLevel::new(0),
+        }
+    }
+
+    /// Byte offset at which a virtual U+FFFC is inserted for bidi analysis.
+    ///
+    /// An object at offset `i` participates immediately before the source character
+    /// beginning at `i`; `text.len()` places it after the final character. The offset
+    /// must be a character boundary within the source text.
+    #[inline]
+    pub fn index(&self) -> usize {
+        self.index
+    }
+
+    /// The object's resolved bidi level.
+    ///
+    /// The level is initialized to zero by [`Self::new`] and overwritten by
+    /// [`Analyzer::analyze_with_objects`].
+    #[inline]
+    pub fn level(&self) -> BidiLevel {
+        self.level
+    }
+
+    #[inline]
+    pub(crate) fn set_level(&mut self, level: BidiLevel) {
+        self.level = level;
+    }
+}
+
 impl Analyzer {
     /// Creates a new analyzer.
     pub fn new() -> Self {
@@ -34,8 +81,58 @@ impl Analyzer {
     /// This reuses the allocations of `analysis`.
     pub fn analyze(&mut self, text: &str, options: &AnalysisOptions<'_>, analysis: &mut Analysis) {
         analysis.clear();
-        analyze_text(self, text, options, analysis);
+        analyze_text(self, text, options, &mut [], analysis);
     }
+
+    /// Analyze source text and inline objects together, overwriting their bidi levels.
+    ///
+    /// Each object participates in the Unicode bidirectional algorithm as U+FFFC,
+    /// irrespective of whether it occupies space in the layout. Objects at the same
+    /// index participate in slice order. Source character indices, segmentation and
+    /// shaping information are retained, and allocations in `analysis` are reused.
+    ///
+    /// # Panics
+    ///
+    /// Panics if objects are not sorted by index or if an index is not a character
+    /// boundary within `text`.
+    pub fn analyze_with_objects(
+        &mut self,
+        text: &str,
+        options: &AnalysisOptions<'_>,
+        objects: &mut [BidiObject],
+        analysis: &mut Analysis,
+    ) {
+        let mut previous_index = 0;
+        for object in objects.iter_mut() {
+            assert!(
+                text.is_char_boundary(object.index),
+                "object index must be a character boundary within text"
+            );
+            assert!(
+                object.index >= previous_index,
+                "objects must be sorted by index"
+            );
+            previous_index = object.index;
+            object.level = BidiLevel::new(0);
+        }
+        analysis.clear();
+        analyze_text(self, text, options, objects, analysis);
+    }
+}
+
+/// Configuration of line break opportunities for a range of text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct LineBreakConfig {
+    /// CSS `word-break`.
+    pub word_break: WordBreak,
+    /// CSS `line-break`.
+    pub line_break: LineBreak,
+    /// The content language.
+    ///
+    /// Chinese and Japanese content uses tailored line breaking rules, which for example allow
+    /// breaks before small kana and some punctuation under [`LineBreak::Normal`] and
+    /// [`LineBreak::Loose`].
+    pub language: Option<Language>,
 }
 
 /// Options controlling [`Analyzer::analyze`].
@@ -46,11 +143,30 @@ pub struct AnalysisOptions<'a> {
     /// Defaults to [`BaseDirection::Auto`], which infers the direction from the text.
     pub base_direction: BaseDirection,
 
-    /// Word break configuration for ranges of the source text.
+    /// Line breaking configuration for ranges of the source text.
     ///
     /// Ranges must be sorted and non-overlapping, and must start and end on character boundaries of
-    /// the text. Empty ranges are ignored. Gaps use [`WordBreak::Normal`].
-    pub word_break: &'a [(Range<usize>, WordBreak)],
+    /// the text. Empty ranges are ignored. Gaps use [`LineBreakConfig::default`].
+    pub line_break: &'a [(Range<usize>, LineBreakConfig)],
+
+    /// Ranges of the source text in which a soft wrap opportunity follows every space, tab, and
+    /// ideographic space.
+    ///
+    /// This implements the additional soft wrap opportunities of
+    /// [CSS's white-space-collapse: break-spaces][css-break-spaces].
+    ///
+    /// Outside these ranges, [UAX #14 § 6][uax-14-algorithm] is followed, which defines where soft
+    /// wrap opportunities exist. For example, rules LB7 and LB18 give a sequence of spaces an
+    /// opportunity only at its end. The ranges specified here add an opportunity after every space,
+    /// tab, and ideographic space, except directly before a mandatory break. This overrides the
+    /// "non-tailorable" UAX #14 Rule LB7, and so deviates from Unicode's line breaking algorithm.
+    ///
+    /// Ranges must be sorted and non-overlapping, and must start and end on character boundaries
+    /// of the text. Empty ranges are ignored. Gaps apply the default rules.
+    ///
+    /// [css-break-spaces]: https://www.w3.org/TR/css-text-4/#valdef-white-space-collapse-break-spaces
+    /// [uax-14-algorithm]: https://unicode.org/reports/tr14/#Algorithm
+    pub break_spaces: &'a [Range<usize>],
 
     /// The callback which will be called as a first provider of line breaking decisions.
     ///
@@ -62,7 +178,8 @@ impl core::fmt::Debug for AnalysisOptions<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("AnalysisOptions")
             .field("base_direction", &self.base_direction)
-            .field("word_break", &self.word_break)
+            .field("line_break", &self.line_break)
+            .field("break_spaces", &self.break_spaces)
             .finish_non_exhaustive()
     }
 }

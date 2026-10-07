@@ -1,7 +1,13 @@
 // Copyright 2024 the Parley Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
+use crate::VerticalAlign;
+use parlance::BidiLevel;
+
 /// A box to be laid out inline with text
+///
+/// All box kinds participate in bidirectional analysis as an object replacement
+/// character (U+FFFC), without inserting a character into the source text.
 #[derive(PartialEq, Debug, Clone)]
 pub struct InlineBox {
     /// User-specified identifier for the box, which can be used by the user to determine which box in
@@ -10,7 +16,13 @@ pub struct InlineBox {
     /// Whether the box is in-flow (takes up space in the layout) or out-of-flow (e.g. absolutely positioned or floated)
     pub kind: InlineBoxKind,
     /// The byte offset into the underlying text string at which the box should be placed.
-    /// This must not be within a Unicode code point.
+    ///
+    /// [`crate::RangedBuilder`] and [`crate::StyleRunBuilder`] use this offset. Building
+    /// panics if it is not a character boundary in `0..=text.len()`, including offsets
+    /// past the end of the text.
+    ///
+    /// [`crate::TreeBuilder`] ignores this field and computes the offset from its
+    /// committed text when the box is pushed.
     pub index: usize,
     /// The width of the box in pixels
     pub width: f32,
@@ -20,6 +32,24 @@ pub struct InlineBox {
     ///
     /// If `None`, the baseline is the box's bottom edge.
     pub baseline: Option<f32>,
+    /// Vertical alignment of the box within its line, relative to the enclosing style span.
+    pub vertical_align: VerticalAlign,
+}
+
+/// An [`InlineBox`] together with the style index of the span that contains it.
+#[derive(PartialEq, Debug, Clone)]
+pub(crate) struct LayoutInlineBox {
+    pub(crate) inline_box: InlineBox,
+    /// Resolved level of the virtual U+FFFC at the box's source index.
+    pub(crate) bidi_level: BidiLevel,
+    /// Style index of the span containing the box, against which the box's `vertical_align`
+    /// is resolved. The box itself has no style of its own.
+    pub(crate) parent_style_index: u16,
+    /// Offset of the box's baseline above the baseline of the independent aligned subtree it
+    /// belongs to (that of the parent style), resolved when the box is placed on a line (box
+    /// sizes may change between building and line breaking). Unused for out-of-flow and
+    /// `vertical-align: top | bottom` boxes.
+    pub(crate) baseline_offset: f32,
 }
 
 /// Whether a box is in-flow (takes up space in the layout) or out-of-flow (e.g. absolutely positioned)

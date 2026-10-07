@@ -45,17 +45,17 @@ parley_emoji = { version = "0.11.0", default-features = false, path = "parley_em
 parley_linebreaking_cases = { path = "parley_tests/linebreaking_cases" }
 
 # External dependencies
-accesskit = "0.24.0"
 bytemuck = { version = "1.25.0", default-features = false }
 harfrust = { version = "0.12.0", default-features = false }
 hashbrown = { version = "0.17.0", default-features = false, features = [
     "default-hasher",
     "raw-entry",
 ] }
-icu_locale_core = { version = "2.1.1", default-features = false }
-icu_normalizer = { version = "2.1.1", default-features = false }
-icu_properties = { version = "2.1.2", default-features = false }
-icu_segmenter = { version = "2.1.2", default-features = false }
+icu_collections = { version = "2.3.0", default-features = false }
+icu_locale_core = { version = "2.3.0", default-features = false }
+icu_normalizer = { version = "2.3.0", default-features = false }
+icu_properties = { version = "2.3.0", default-features = false }
+icu_segmenter = { version = "2.3.0", default-features = false }
 linebender_resource_handle = { version = "0.1.1", default-features = false }
 packtab = { version = "1.9.0" }
 rand = { version = "0.10.1", default-features = false, features = ["std", "std_rng"] }

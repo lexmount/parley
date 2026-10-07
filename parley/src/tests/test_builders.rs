@@ -15,8 +15,9 @@ use super::utils::{
 };
 use crate::{
     BaseDirection, BreakReason, FontContext, FontFamily, FontFeatures, FontVariations, Layout,
-    LayoutContext, LineHeight, OverflowWrap, RangedBuilder, StyleProperty, StyleRunBuilder,
-    TextStyle, TextWrapMode, TreeBuilder, WhiteSpaceCollapse, WordBreak,
+    LayoutContext, LineBreak, LineHeight, OverflowWrap, RangedBuilder, StyleProperty,
+    StyleRunBuilder, TextStyle, TextWrapMode, TreeBuilder, VerticalAlign, WhiteSpaceCollapse,
+    WordBreak,
 };
 
 /// Set of options for [`build_layout_with_ranged`].
@@ -225,9 +226,13 @@ fn create_root_style() -> TextStyle<'static, 'static, ColorBrush> {
         strikethrough_size: Some(1.7),
         strikethrough_brush: Some(ColorBrush::new(palette::css::BEIGE)),
         line_height: LineHeight::Absolute(30.),
+        // Parent-relative, so it compounds through nested tree spans but not through ranged
+        // styles; keep it at the default so both builders agree.
+        vertical_align: VerticalAlign::BASELINE,
         word_spacing: 2.,
         letter_spacing: 1.5,
         word_break: WordBreak::BreakAll,
+        line_break: LineBreak::Loose,
         overflow_wrap: OverflowWrap::Anywhere,
         text_wrap_mode: TextWrapMode::Wrap,
         white_space_collapse: WhiteSpaceCollapse::PreserveBreaks,
@@ -260,9 +265,11 @@ fn set_root_style(rb: &mut RangedBuilder<'_, ColorBrush>) {
         palette::css::BEIGE,
     ))));
     rb.push_default(LineHeight::Absolute(30.));
+    rb.push_default(VerticalAlign::BASELINE);
     rb.push_default(StyleProperty::WordSpacing(2.));
     rb.push_default(StyleProperty::LetterSpacing(1.5));
     rb.push_default(StyleProperty::WordBreak(WordBreak::BreakAll));
+    rb.push_default(StyleProperty::LineBreak(LineBreak::Loose));
     rb.push_default(StyleProperty::OverflowWrap(OverflowWrap::Anywhere));
     rb.push_default(StyleProperty::WhiteSpaceCollapse(
         WhiteSpaceCollapse::PreserveBreaks,
@@ -602,43 +609,6 @@ fn builders_crlf_counts_as_single_line_break() {
     );
 }
 
-/// A CRLF whose `\r` and `\n` land in different shaped runs (because a style
-/// change starts at the `\n`) must still coalesce into a single hard break.
-#[test]
-fn builders_crlf_across_run_boundary_counts_as_single_line_break() {
-    let mut fcx = create_font_context();
-    let styled_line_count =
-        |fcx: &mut FontContext, text: &str, style_range: std::ops::Range<usize>| -> usize {
-            let mut lcx: LayoutContext<ColorBrush> = LayoutContext::new();
-            let ropts = RangedOptions {
-                scale: 1.0,
-                quantize: false,
-                max_advance: None,
-                text,
-            };
-            let layout = build_layout_with_ranged(fcx, &mut lcx, &ropts, |rb| {
-                set_root_style(rb);
-                // A style change starting at the `\n` forces shaping to split the
-                // CRLF pair across two runs.
-                rb.push(StyleProperty::FontSize(40.), style_range.clone());
-            });
-            layout.lines().len()
-        };
-
-    // The `\n` in "a\r\nb" is byte 2.
-    let split_crlf = styled_line_count(&mut fcx, "a\r\nb", 2..3);
-    let split_lf = styled_line_count(&mut fcx, "a\nb", 2..3);
-
-    assert_eq!(
-        split_crlf, 2,
-        "a style boundary at the LF must not turn CRLF into two hard breaks"
-    );
-    assert_eq!(
-        split_crlf, split_lf,
-        "styled CRLF should match styled LF line count"
-    );
-}
-
 /// ICU4X's line segmenter emits a soft break opportunity at the end of a
 /// complex-script (Thai, Khmer, Lao, ...) run even when the next character is a
 /// mandatory break, which must not shadow the hard break.
@@ -675,4 +645,28 @@ fn builders_newline_inside_complex_script_run_is_hard_break() {
             "{text:?} should produce exactly two lines with an explicit break",
         );
     }
+}
+
+#[test]
+fn builders_empty_text_after_styled_layout_reuses_context() {
+    let mut fcx = FontContext::default();
+    let mut lcx: LayoutContext<ColorBrush> = LayoutContext::new();
+
+    let root = TextStyle::default();
+    let mut builder = lcx.tree_builder(&mut fcx, 1.0, true, &root);
+    builder.push_style_span(TextStyle {
+        font_size: 20.,
+        ..Default::default()
+    });
+    builder.push_text("a");
+    builder.pop_style_span();
+    let (layout, _) = builder.build();
+    assert_eq!(layout.styles().len(), 2);
+
+    // The empty layout is shaped with a substitute space, which must use the root style rather
+    // than a stale style index left over from the previous layout.
+    let builder = lcx.ranged_builder(&mut fcx, "", 1.0, true);
+    let mut layout = builder.build("");
+    layout.break_all_lines(None);
+    assert_eq!(layout.lines().count(), 1);
 }

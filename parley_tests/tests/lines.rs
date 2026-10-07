@@ -8,6 +8,7 @@
 
 use crate::test_name;
 use crate::util::{ColorBrush, TestEnv};
+use parley::VerticalAlign;
 use parley::{
     Affinity, Alignment, AlignmentOptions, BoundingBox, Brush, Cursor, InlineBox, InlineBoxKind,
     Layout, Line, LineHeight, Selection, StyleProperty,
@@ -59,17 +60,15 @@ fn line_text_metrics<B: Brush>(line: &Line<'_, B>) -> TextMetrics {
     // `LineMetrics`).
     let mut ascent = 0_f32;
     let mut descent = 0_f32;
-    let mut line_height = 0_f32;
     for run in line.runs() {
         let metrics = run.font_metrics();
         ascent = ascent.max(metrics.ascent);
         descent = descent.max(metrics.descent);
-        line_height = line_height.max(run.line_height());
     }
     TextMetrics {
         ascent,
         descent,
-        leading: line_height - (ascent + descent),
+        leading: line.metrics().line_height - (ascent + descent),
     }
 }
 
@@ -141,6 +140,7 @@ fn build_layout<A: Into<Option<f32>>>(
         width: 50.0,
         height: 5.0,
         baseline: None,
+        vertical_align: VerticalAlign::BASELINE,
     });
     builder.push_inline_box(InlineBox {
         id: 1,
@@ -149,6 +149,7 @@ fn build_layout<A: Into<Option<f32>>>(
         width: 50.0,
         height: 3.0,
         baseline: None,
+        vertical_align: VerticalAlign::BASELINE,
     });
 
     let mut layout = builder.build(TEXT);
@@ -527,6 +528,7 @@ fn lines_negative_leading_inline_box_grows_line_box() {
         width: 12.0,
         height: box_height,
         baseline: None,
+        vertical_align: VerticalAlign::BASELINE,
     });
     let mut layout: Layout<ColorBrush> = builder.build(text);
     layout.break_all_lines(None);
@@ -685,5 +687,153 @@ fn lines_line_height_absolute() {
 
     layout.break_all_lines(None);
     layout.align(Alignment::Start, AlignmentOptions::default());
+    env.check_layout_snapshot(&layout);
+}
+
+/// Test that line height changes within a run affects the lines they occur on.
+#[test]
+fn line_height_changes_per_line() {
+    let text = "cat ray bat jay";
+    let small = 10.;
+
+    let mut env = TestEnv::new(test_name!(), None);
+    let mut builder = env.ranged_builder(text);
+    builder.push_default(LineHeight::Absolute(small));
+    // The "c" of "cat".
+    builder.push(LineHeight::MetricsRelative(1.5), 0..1);
+
+    // The "a" of "jay".
+    builder.push(LineHeight::MetricsRelative(2.5), 13..14);
+
+    // Narrow enough for one word per line.
+    let mut layout: Layout<ColorBrush> = builder.build(text);
+    layout.break_all_lines(Some(1.0));
+
+    env.render_and_check_snapshot(&layout, None, &[]);
+
+    let mut lines = layout.lines();
+    assert!(lines.next().unwrap().metrics().line_height > small);
+    assert_eq!(lines.next().unwrap().metrics().line_height, small);
+    assert_eq!(lines.next().unwrap().metrics().line_height, small);
+    assert!(lines.next().unwrap().metrics().line_height > small);
+    assert!(lines.next().is_none());
+}
+
+#[test]
+fn line_height_change_inside_ligature() {
+    let text = "ffi ffi";
+    let small = 20.0;
+    let large = 40.0;
+
+    let mut env = TestEnv::new(test_name!(), None);
+    let mut builder = env.ranged_builder(text);
+    builder.push_default(LineHeight::Absolute(small));
+
+    // The ligature forms, and gets the bigger line height from the middle "f"
+    builder.push(LineHeight::Absolute(large), 5..6);
+
+    // Narrow enough for one word per line.
+    let mut layout: Layout<ColorBrush> = builder.build(text);
+    layout.break_all_lines(Some(1.0));
+
+    env.render_and_check_snapshot(&layout, None, &[]);
+
+    let mut lines = layout.lines();
+    assert_eq!(lines.next().unwrap().metrics().line_height, small);
+    assert_eq!(lines.next().unwrap().metrics().line_height, large);
+}
+
+/// Metrics contributed by content that is moved to the next line when a word does not fit must
+/// not leak into the line it was reverted from.
+#[test]
+fn lines_revert_restores_line_height() {
+    let mut env = TestEnv::new(test_name!(), None);
+
+    let text = "aaa BBB";
+    let mut builder = env.ranged_builder(text);
+    builder.push(StyleProperty::FontSize(64.0), 4..7);
+    let mut layout = builder.build(text);
+
+    // "aaa B" fits, so the large glyphs are added to the first line before the line breaker
+    // reverts to the break opportunity after the space.
+    layout.break_all_lines(Some(95.0));
+    layout.align(Alignment::Start, AlignmentOptions::default());
+
+    assert_eq!(layout.len(), 2);
+    let heights: Vec<f32> = layout.lines().map(|l| l.metrics().line_height).collect();
+    assert_eq!(heights, [16.0, 64.0]);
+}
+
+/// Like [`lines_revert_restores_line_height`], but the reverted content is in a
+/// `vertical-align: top` span, i.e. not in the root aligned subtree.
+#[test]
+fn lines_revert_restores_aligned_subtree_line_height() {
+    let mut env = TestEnv::new(test_name!(), None);
+
+    let text = "aaa BBB";
+    let mut builder = env.ranged_builder(text);
+    builder.push(StyleProperty::FontSize(64.0), 4..7);
+    builder.push(StyleProperty::VerticalAlign(VerticalAlign::TOP), 4..7);
+    let mut layout = builder.build(text);
+
+    layout.break_all_lines(Some(95.0));
+    layout.align(Alignment::Start, AlignmentOptions::default());
+
+    assert_eq!(layout.len(), 2);
+    let heights: Vec<f32> = layout.lines().map(|l| l.metrics().line_height).collect();
+    assert_eq!(heights, [16.0, 64.0]);
+}
+
+/// A `top` and a `bottom` aligned subtree spanning several words each, whose extents grow word
+/// by word across line-breaking opportunities and reverts, on lines with both of them.
+#[test]
+fn lines_aligned_subtrees_grow_across_breaks() {
+    let mut env = TestEnv::new(test_name!(), None);
+
+    let mut builder = env.tree_builder();
+    for (i, align) in [
+        VerticalAlign::TOP,
+        VerticalAlign::BOTTOM,
+        VerticalAlign::TOP,
+        VerticalAlign::BOTTOM,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        builder.push_style_modification_span(&[StyleProperty::VerticalAlign(align)]);
+        for (j, word) in ["aa ", "bbb ", "cc ", "ddd ", "ee "]
+            .into_iter()
+            .enumerate()
+        {
+            let size = 12.0 + 4.0 * ((i + j) % 4) as f32;
+            // `vertical-align` is inherited, so reset it to keep the word in the subtree of the
+            // enclosing `top`/`bottom` span.
+            builder.push_style_modification_span(&[
+                StyleProperty::FontSize(size),
+                StyleProperty::VerticalAlign(VerticalAlign::BASELINE),
+            ]);
+            builder.push_text(word);
+            builder.pop_style_span();
+        }
+        builder.pop_style_span();
+    }
+    let (mut layout, _) = builder.build();
+    layout.break_all_lines(Some(130.0));
+    layout.align(Alignment::Start, AlignmentOptions::default());
+
+    let metrics: Vec<(f32, f32)> = layout
+        .lines()
+        .map(|l| (l.metrics().line_height, l.metrics().baseline))
+        .collect();
+    assert_eq!(
+        metrics,
+        [
+            (24.0, 13.0),
+            (24.0, 45.0),
+            (24.0, 61.0),
+            (24.0, 89.0),
+            (24.0, 117.0)
+        ]
+    );
     env.check_layout_snapshot(&layout);
 }

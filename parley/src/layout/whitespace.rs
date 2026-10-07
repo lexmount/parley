@@ -1,7 +1,30 @@
 // Copyright 2026 the Parley Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Some whitespace-related utilities.
+//! Whitespace-related utilities, for implementing e.g. whitespace collapse and whitespace hanging.
+//!
+//! # Conditional vs. unconditional whitespace hanging
+//!
+//! Under CSS Text 4 § 4.3.2, some whitespace hangs, and some may hang *conditionally*.
+//! Conditionally hanging whitespace only hangs if it overflows the line. A sequence of
+//! `white-space-collapse: preserve; text-wrap-mode: wrap;` whitespace hangs conditionally if it's
+//! directly followed by a forced line break; otherwise, it hangs unconditionally. The end of the
+//! layout counts as a forced line break (CSS Text 4 § 5). In particular, if the `preserve` sequence
+//! is followed by a sequence of `collapse` whitespace (and not a break), then it hangs
+//! unconditionally. Effectively, the two sequences can just be treated as one that's
+//! unconditionally hanging.
+//!
+//! Under CSS Text 4 § 9.2, unconditionally hanging whitespace followed by conditionally hanging
+//! whitespace, hangs in full, but only if the conditionally-hanging whitespace hangs in full. See
+//! <https://github.com/linebender/parley/pull/831> for an HTML sample.
+//!
+//! So, in effect, the only behaviorally observable case of conditional vs. unconditional hanging
+//! can be represented as a suffix of conditionally hanging whitespace, preceded by unconditionally
+//! hanging whitespace.
+//!
+//! Further note that normally, under `white-space-collapse: collapse`, most but not all whitespace
+//! is collapsed; e.g., the Ideographic Space (U+3000) does not collapse. It generally takes
+//! deliberate effort to write a sample that exercises these edge cases.
 
 use parley_engine::shape::Whitespace;
 use parley_engine::{Atom, ShapedSlice};
@@ -16,7 +39,7 @@ impl WhiteSpaceCollapse {
     pub(crate) fn is_collapsible(self, c: char) -> bool {
         match self {
             Self::Collapse => c.is_ascii_whitespace(),
-            Self::Preserve => false,
+            Self::Preserve | Self::BreakSpaces => false,
             Self::PreserveBreaks => matches!(c, ' ' | '\t'),
         }
     }
@@ -39,8 +62,11 @@ pub(crate) fn whitespace_hangs<B: Brush>(whitespace: Whitespace, style: &Style<B
     match whitespace {
         Whitespace::Newline => true,
         Whitespace::Space | Whitespace::IdeographicSpace | Whitespace::Tab => {
-            style.white_space_collapse != WhiteSpaceCollapse::Preserve
-                || style.text_wrap_mode == TextWrapMode::Wrap
+            match style.white_space_collapse {
+                WhiteSpaceCollapse::BreakSpaces => false,
+                WhiteSpaceCollapse::Preserve => style.text_wrap_mode == TextWrapMode::Wrap,
+                _ => true,
+            }
         }
         _ => false,
     }
@@ -76,7 +102,7 @@ pub(crate) fn atom_hanging_advance<B: Brush>(
             .iter()
             .all(|character| {
                 whitespace_hangs(
-                    character.info.whitespace(),
+                    character.whitespace,
                     &styles[character.style_index as usize],
                 )
             });

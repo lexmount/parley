@@ -5,12 +5,11 @@
 #![expect(
     missing_debug_implementations,
     unreachable_pub,
-    clippy::allow_attributes_without_reason,
     clippy::cast_possible_truncation,
     reason = "Deferred"
 )]
 
-use accesskit::{Node, Role, Tree, TreeId, TreeUpdate};
+use accesskit::{Node, Role, TreeId, TreeInfo, TreeUpdate};
 use anyhow::Result;
 use std::num::NonZeroU32;
 use std::sync::Arc;
@@ -30,6 +29,7 @@ const BACKGROUND_COLOR: Color = Color::from_rgb8(30, 30, 30);
 type SoftbufferSurface = softbuffer::Surface<Arc<Window>, Arc<Window>>;
 
 mod access_ids;
+mod accessibility;
 use access_ids::{TEXT_INPUT_ID, WINDOW_ID};
 
 mod text;
@@ -51,7 +51,7 @@ impl ActiveRenderState {
             let mut update = TreeUpdate {
                 tree_id: TreeId::ROOT,
                 nodes: vec![],
-                tree: (!self.sent_initial_access_update).then(|| Tree::new(WINDOW_ID)),
+                tree: (!self.sent_initial_access_update).then(|| TreeInfo::new(WINDOW_ID)),
                 focus: TEXT_INPUT_ID,
             };
             if !self.sent_initial_access_update {

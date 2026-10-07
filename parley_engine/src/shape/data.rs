@@ -5,7 +5,7 @@
 
 use core::ops::Range;
 
-use crate::{Boundary, shape::Whitespace};
+use crate::shape::Whitespace;
 
 /// Data for a single character of the source text.
 ///
@@ -14,9 +14,13 @@ use crate::{Boundary, shape::Whitespace};
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Character {
     pub text_byte_start: u32,
-    pub info: ClusterInfo,
     /// Style index for this character.
     pub style_index: u16,
+    /// The whitespace class of this character.
+    pub whitespace: Whitespace,
+    /// Properties of this character.
+    pub flags: CharacterFlags,
+    /// Whether this character begins a grapheme cluster.
     pub grapheme_start: bool,
 }
 
@@ -24,7 +28,13 @@ impl Character {
     /// The byte range of this character in the source text.
     #[inline(always)]
     pub fn text_byte_range(&self) -> Range<usize> {
-        self.text_byte_start as usize..self.text_byte_start as usize + self.info.len_utf8()
+        self.text_byte_start as usize..self.text_byte_start as usize + self.flags.len_utf8()
+    }
+
+    /// Returns if this character is any whitespace.
+    #[inline(always)]
+    pub fn is_whitespace(self) -> bool {
+        self.whitespace != Whitespace::None
     }
 }
 
@@ -36,6 +46,11 @@ impl ShapedClusterFlags {
     const INLINE_GLYPH: u16 = 1 << 8;
     const GRAPHEME_START: u16 = 1 << 9;
     const SAFE_TO_BREAK_BEFORE: u16 = 1 << 10;
+    /// Whether a soft wrap opportunity exists before the cluster's first character.
+    const SOFT_WRAP_BEFORE: u16 = 1 << 11;
+    /// [`Whitespace`] class of the cluster's first character (3 bits).
+    const WHITESPACE_SHIFT: u16 = 12;
+    const WHITESPACE_MASK: u16 = 0b111 << Self::WHITESPACE_SHIFT;
 
     #[inline(always)]
     pub(crate) const fn new(glyph_len: u8) -> Self {
@@ -59,6 +74,41 @@ impl ShapedClusterFlags {
         self.0 =
             self.0 & !Self::SAFE_TO_BREAK_BEFORE | if set { Self::SAFE_TO_BREAK_BEFORE } else { 0 };
         self
+    }
+
+    #[inline(always)]
+    pub(crate) const fn with_first_char(
+        mut self,
+        soft_wrap_opportunity: bool,
+        whitespace: Whitespace,
+    ) -> Self {
+        self.0 = self.0 & !(Self::SOFT_WRAP_BEFORE | Self::WHITESPACE_MASK)
+            | if soft_wrap_opportunity {
+                Self::SOFT_WRAP_BEFORE
+            } else {
+                0
+            }
+            | ((whitespace as u16) << Self::WHITESPACE_SHIFT);
+        self
+    }
+
+    #[inline(always)]
+    const fn is_soft_wrap_opportunity_before(self) -> bool {
+        self.0 & Self::SOFT_WRAP_BEFORE != 0
+    }
+
+    #[inline(always)]
+    const fn whitespace(self) -> Whitespace {
+        match (self.0 & Self::WHITESPACE_MASK) >> Self::WHITESPACE_SHIFT {
+            1 => Whitespace::Space,
+            2 => Whitespace::NoBreakSpace,
+            3 => Whitespace::IdeographicSpace,
+            4 => Whitespace::OtherSpaceSeparator,
+            5 => Whitespace::Tab,
+            6 => Whitespace::Newline,
+            7 => Whitespace::ControlWhitespace,
+            _ => Whitespace::None,
+        }
     }
 
     #[inline(always)]
@@ -166,6 +216,29 @@ impl ShapedCluster {
         self.flags.is_safe_to_break_before()
     }
 
+    /// Whether a soft wrap opportunity exists before this cluster's first character.
+    ///
+    /// This is [`Character::flags`]' soft-wrap bit of the first character of [`Self::chars_range`],
+    /// cached here so that measuring text does not need to touch the character array.
+    #[inline(always)]
+    pub fn is_soft_wrap_opportunity_before(self) -> bool {
+        self.flags.is_soft_wrap_opportunity_before()
+    }
+
+    /// The [`Whitespace`] class of this cluster's first character.
+    ///
+    /// See [`Self::is_soft_wrap_opportunity_before`].
+    #[inline(always)]
+    pub fn whitespace(self) -> Whitespace {
+        self.flags.whitespace()
+    }
+
+    /// The number of characters in this cluster.
+    #[inline(always)]
+    pub fn char_len(self) -> u32 {
+        self.chars_range.1 - self.chars_range.0
+    }
+
     /// The number of graphemes this cluster overlaps.
     pub(crate) fn graphemes_overlapped(&self, characters: &[Character]) -> u32 {
         let start = self.chars_range().start as usize + 1;
@@ -178,52 +251,67 @@ impl ShapedCluster {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub struct ClusterInfo {
-    boundary: Boundary,
-    whitespace: Whitespace,
-    source_char: char,
-}
+/// Properties of a [`Character`].
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct CharacterFlags(u8);
 
-impl ClusterInfo {
+impl CharacterFlags {
+    /// Bits 0..2: the UTF-8 length of the source character minus one.
+    ///
+    /// (Note the UTF-8 length of any character is between 1 and 4 inclusive.)
+    const LEN_UTF8_MASK: u8 = 0b11;
+    /// Whether the source character is an emoji.
+    const EMOJI: u8 = 1 << 2;
+    /// Whether there is a word boundary before the character.
+    const WORD_BOUNDARY: u8 = 1 << 3;
+    /// Whether there is a soft wrap opportunity before the character.
+    const SOFT_WRAP_OPPORTUNITY: u8 = 1 << 4;
+
     #[inline(always)]
-    pub fn new(boundary: Boundary, source_char: char) -> Self {
-        Self {
-            boundary,
-            whitespace: Whitespace::from_char(source_char),
-            source_char,
-        }
-    }
-
-    // Returns the boundary type of the cluster.
-    #[inline(always)]
-    pub fn boundary(self) -> Boundary {
-        self.boundary
-    }
-
-    // Returns the whitespace type of the cluster.
-    #[inline(always)]
-    pub fn whitespace(self) -> Whitespace {
-        self.whitespace
-    }
-
-    /// Returns if the cluster is a line boundary.
-    #[inline]
-    pub fn is_boundary(self) -> bool {
-        self.boundary != Boundary::None
-    }
-
-    /// Returns if the cluster is an emoji.
-    #[inline]
-    pub fn is_emoji(self) -> bool {
+    pub fn new(source_char: char, is_word_boundary: bool, is_soft_wrap_opportunity: bool) -> Self {
         // TODO: Defer to ICU4X properties (see: https://docs.rs/icu/latest/icu/properties/props/struct.Emoji.html).
-        matches!(self.source_char as u32, 0x1F600..=0x1F64F | 0x1F300..=0x1F5FF | 0x1F680..=0x1F6FF | 0x2600..=0x26FF | 0x2700..=0x27BF)
+        let is_emoji = matches!(source_char as u32, 0x1F600..=0x1F64F | 0x1F300..=0x1F5FF | 0x1F680..=0x1F6FF | 0x2600..=0x26FF | 0x2700..=0x27BF);
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "`len_utf8` is between 1 and 4 inclusive"
+        )]
+        let len_utf8 = source_char.len_utf8() as u8;
+        Self(
+            (len_utf8 - 1)
+                | if is_emoji { Self::EMOJI } else { 0 }
+                | if is_word_boundary {
+                    Self::WORD_BOUNDARY
+                } else {
+                    0
+                }
+                | if is_soft_wrap_opportunity {
+                    Self::SOFT_WRAP_OPPORTUNITY
+                } else {
+                    0
+                },
+        )
     }
 
-    /// Returns if the cluster is any whitespace.
+    /// Whether there is a soft wrap opportunity before this character ([UAX #14][line-breaking]).
+    ///
+    /// Note mandatory breaks (like `\n`) are encoded as [`Whitespace`].
+    ///
+    /// [line-breaking]: https://www.unicode.org/reports/tr14/
     #[inline(always)]
-    pub fn is_whitespace(self) -> bool {
-        self.whitespace() != Whitespace::None
+    pub fn is_soft_wrap_opportunity(self) -> bool {
+        self.0 & Self::SOFT_WRAP_OPPORTUNITY != 0
+    }
+
+    /// Returns if there is a word boundary before the character.
+    #[inline(always)]
+    pub fn is_word_boundary(self) -> bool {
+        self.0 & Self::WORD_BOUNDARY != 0
+    }
+
+    /// Returns if the character is an emoji.
+    #[inline(always)]
+    pub fn is_emoji(self) -> bool {
+        self.0 & Self::EMOJI != 0
     }
 
     /// Returns the number of bytes the source character would need if encoded in UTF-8.
@@ -231,13 +319,7 @@ impl ClusterInfo {
     /// That number of bytes is always between 1 and 4, inclusive.
     #[inline(always)]
     pub fn len_utf8(self) -> usize {
-        self.source_char.len_utf8()
-    }
-
-    /// Returns the cluster's original character.
-    #[inline(always)]
-    pub fn source_char(self) -> char {
-        self.source_char
+        (self.0 & Self::LEN_UTF8_MASK) as usize + 1
     }
 }
 
@@ -246,7 +328,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cluster_info() {
+    fn character_flags() {
         for (ch, len, emoji) in [
             ('a', 1, false),
             (' ', 1, false),
@@ -258,11 +340,54 @@ mod tests {
             ('\u{2600}', 3, true),
             ('\u{1F600}', 4, true),
         ] {
-            let info = ClusterInfo::new(Boundary::Line, ch);
-            assert_eq!(info.boundary(), Boundary::Line, "{ch:?}");
-            assert_eq!(info.whitespace(), Whitespace::from_char(ch), "{ch:?}");
-            assert_eq!(info.len_utf8(), len, "{ch:?}");
-            assert_eq!(info.is_emoji(), emoji, "{ch:?}");
+            for (is_word_boundary, is_soft_wrap_opportunity) in
+                [(false, false), (true, false), (false, true), (true, true)]
+            {
+                let flags = CharacterFlags::new(ch, is_word_boundary, is_soft_wrap_opportunity);
+                assert_eq!(flags.len_utf8(), len, "{ch:?}");
+                assert_eq!(flags.is_emoji(), emoji, "{ch:?}");
+                assert_eq!(flags.is_word_boundary(), is_word_boundary, "{ch:?}");
+                assert_eq!(
+                    flags.is_soft_wrap_opportunity(),
+                    is_soft_wrap_opportunity,
+                    "{ch:?}"
+                );
+            }
+
+            let character = Character {
+                text_byte_start: 3,
+                style_index: 7,
+                whitespace: Whitespace::from_char(ch),
+                flags: CharacterFlags::new(ch, false, false),
+                grapheme_start: true,
+            };
+            assert_eq!(character.text_byte_range(), 3..3 + len, "{ch:?}");
+        }
+    }
+
+    #[test]
+    fn first_char_flags_round_trip() {
+        let soft_wraps = [false, true];
+        let whitespaces = [
+            Whitespace::None,
+            Whitespace::Space,
+            Whitespace::NoBreakSpace,
+            Whitespace::IdeographicSpace,
+            Whitespace::OtherSpaceSeparator,
+            Whitespace::Tab,
+            Whitespace::Newline,
+            Whitespace::ControlWhitespace,
+        ];
+        for soft_wrap in soft_wraps {
+            for whitespace in whitespaces {
+                let flags = ShapedClusterFlags::new(3)
+                    .with_grapheme_start(true)
+                    .with_first_char(soft_wrap, whitespace);
+                assert_eq!(flags.is_soft_wrap_opportunity_before(), soft_wrap);
+                assert_eq!(flags.whitespace(), whitespace);
+                assert_eq!(flags.glyph_len(), 3);
+                assert!(flags.is_grapheme_start());
+            }
         }
     }
 }

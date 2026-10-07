@@ -1,18 +1,18 @@
 // Copyright 2025 the Parley Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
+use crate::IndentOptions;
 use crate::InlineBox;
 use crate::layout::alignment::align;
 use crate::layout::data::LayoutData;
+use crate::layout::{
+    ContentWidths, SpanMetrics, Style, alignment::Alignment, alignment::AlignmentOptions,
+    line::Line, line_break::BreakLines,
+};
 use crate::style::Brush;
+
 use core::cmp::Ordering;
 use core::fmt;
-
-use crate::IndentOptions;
-use crate::layout::{
-    ContentWidths, Style, alignment::Alignment, alignment::AlignmentOptions, line::Line,
-    line_break::BreakLines,
-};
 
 /// Text layout.
 ///
@@ -64,6 +64,35 @@ impl<B: Brush> Layout<B> {
     /// Returns the style collection for the layout.
     pub fn styles(&self) -> &[Style<B>] {
         &self.data.styles
+    }
+
+    /// The inherent metrics of the root span (in CSS terms, that is the metrics of the
+    /// [root inline box](https://www.w3.org/TR/css-inline-3/#root-inline-box)).
+    ///
+    /// These are available once the layout is built, and will be `None` otherwise.
+    /// The metric values come from the first available font and font size resolved
+    /// from [`push_default`](crate::RangedBuilder::push_default).
+    ///
+    /// The motivating use case is placing bullet list markers - Blink uses the root
+    /// span's ascent and descent for their location and size.
+    pub fn root_span_metrics(&self) -> Option<SpanMetrics> {
+        self.data.style_metrics.first().map(|it| SpanMetrics {
+            ascent: it.ascent,
+            descent: it.descent,
+            x_height: it.x_height,
+        })
+    }
+
+    /// Returns the length of the source text, in bytes.
+    pub fn text_len(&self) -> usize {
+        self.data.text_len
+    }
+
+    /// Returns the alignment that was applied to the layout by [`Layout::align`].
+    ///
+    /// Returns `None` if the layout has not been aligned since it was last built.
+    pub fn alignment(&self) -> Option<Alignment> {
+        self.data.alignment
     }
 
     /// The `max_advance` that was used to line break the `Layout`
@@ -134,12 +163,14 @@ impl<B: Brush> Layout<B> {
         self.data.base_level.is_rtl()
     }
 
-    pub fn inline_boxes(&self) -> &[InlineBox] {
-        &self.data.inline_boxes
+    /// Iterator over inline boxes in text index order.
+    pub fn inline_boxes(&self) -> impl ExactSizeIterator<Item = &InlineBox> + '_ {
+        self.data.inline_boxes.iter().map(|b| &b.inline_box)
     }
 
-    pub fn inline_boxes_mut(&mut self) -> &mut [InlineBox] {
-        &mut self.data.inline_boxes
+    /// Mutable iterator over the inline boxes in text index order.
+    pub fn inline_boxes_mut(&mut self) -> impl ExactSizeIterator<Item = &mut InlineBox> + '_ {
+        self.data.inline_boxes.iter_mut().map(|b| &mut b.inline_box)
     }
 
     /// Returns an iterator over the lines in the layout.

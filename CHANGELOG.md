@@ -28,10 +28,19 @@ This release has an [MSRV] of 1.88.
 
 - `Collection::family_ids` to iterate over unique font family identifiers. ([#725][] by [@tomcur][])
 
+#### Parley
+
+- `Layout::text_len` and `Layout::alignment`, `Cursor::upstream_cluster` and `Cursor::downstream_cluster`, `PlainEditor::is_cursor_visible`, and `PlainEditorDriver::set_selection`. ([#716][] by [@DataTriny][])
+  `ClusterPath::new` and the `Style::locale` field are now public as well.
+  Together these make it possible to build an accessibility integration outside of Parley.
+
 ### Changed
 
 #### Parley
 
+- Breaking change: the `accesskit` feature, and the AccessKit integration it enabled, were removed. ([#716][] by [@DataTriny][])
+  The integration now lives in the `vello_editor` example, where it is easier to evolve and can be copied and adapted by consumers.
+  This removed `LayoutAccessibility`, `PlainEditor::try_accessibility`, `PlainEditorDriver::accessibility`, `PlainEditorDriver::select_from_accesskit`, `Cursor::from_access_position`, `Cursor::to_access_position`, `Selection::from_access_selection`, and `Selection::to_access_selection`.
 - Breaking change: the `Glyph::style_index` field was removed. Use `Cluster::{style, style_index}` or `GlyphRun::{style, style_index}` instead. ([#661][] by [@tomcur][])
 - Breaking change: `Cluster` now spans a full grapheme cluster instead of a single character. ([#715][] by [@tomcur][])  
   Shaped clusters that cross grapheme boundaries are represented using the existing `Cluster::is_ligature_start` and `Cluster::is_ligature_continuation`; note these methods previously encoded graphemes as well.
@@ -55,6 +64,7 @@ This release has an [MSRV] of 1.88.
 
 - Fix compilation on 32-bit platforms without 64-bit atomics (e.g. `mipsel-unknown-linux-gnu`). ([#671][] by [@nicoburns][])
 - Don't panic when fontconfig exposes no fonts. ([#717][] by [@ogoffart][])
+- `Collection::load_fonts_from_paths` no longer registers duplicate faces. ([#754][] by [@ChrisJr404][])
 
 ## [0.11.0] - 2026-06-24
 
@@ -550,7 +560,9 @@ This release has an [MSRV][] of 1.70.
 [MSRV]: README.md#minimum-supported-rust-version-msrv
 
 [@areopagitics]: https://github.com/areopagitics
+[@ChrisJr404]: https://github.com/ChrisJr404
 [@conor-93]: https://github.com/conor-93
+[@DataTriny]: https://github.com/DataTriny
 [@devunt]: https://github.com/devunt
 [@dfrg]: https://github.com/dfrg
 [@dhardy]: https://github.com/dhardy
@@ -731,10 +743,12 @@ This release has an [MSRV][] of 1.70.
 [#697]: https://github.com/linebender/parley/pull/697
 [#710]: https://github.com/linebender/parley/pull/710
 [#715]: https://github.com/linebender/parley/pull/715
+[#716]: https://github.com/linebender/parley/pull/716
 [#717]: https://github.com/linebender/parley/pull/717
 [#725]: https://github.com/linebender/parley/pull/725
 [#728]: https://github.com/linebender/parley/pull/728
 [#731]: https://github.com/linebender/parley/pull/731
+[#754]: https://github.com/linebender/parley/pull/754
 
 [Unreleased]: https://github.com/linebender/parley/compare/v0.11.0...HEAD
 [0.11.0]: https://github.com/linebender/parley/compare/v0.10.0...v0.11.0
