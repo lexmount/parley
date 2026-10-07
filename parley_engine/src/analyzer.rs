@@ -5,7 +5,7 @@
 
 use core::ops::Range;
 
-use parlance::{BaseDirection, Language, LineBreak, WordBreak};
+use parlance::{BaseDirection, BidiLevel, Language, LineBreak, WordBreak};
 
 use crate::{bidi::BidiResolver, break_overrides::LineBreakOverrideFn};
 
@@ -23,6 +23,53 @@ impl core::fmt::Debug for Analyzer {
     }
 }
 
+/// An inline object participating in bidirectional analysis as a virtual U+FFFC.
+///
+/// The replacement character is not inserted into the source text and does not
+/// participate in segmentation or shaping.
+#[derive(Clone, Copy, Debug)]
+pub struct BidiObject {
+    index: usize,
+    level: BidiLevel,
+}
+
+impl BidiObject {
+    /// Creates an object anchored at `index` in the source text.
+    ///
+    /// See [`Self::index`] for the placement semantics and valid offsets.
+    #[inline]
+    pub fn new(index: usize) -> Self {
+        Self {
+            index,
+            level: BidiLevel::new(0),
+        }
+    }
+
+    /// Byte offset at which a virtual U+FFFC is inserted for bidi analysis.
+    ///
+    /// An object at offset `i` participates immediately before the source character
+    /// beginning at `i`; `text.len()` places it after the final character. The offset
+    /// must be a character boundary within the source text.
+    #[inline]
+    pub fn index(&self) -> usize {
+        self.index
+    }
+
+    /// The object's resolved bidi level.
+    ///
+    /// The level is initialized to zero by [`Self::new`] and overwritten by
+    /// [`Analyzer::analyze_with_objects`].
+    #[inline]
+    pub fn level(&self) -> BidiLevel {
+        self.level
+    }
+
+    #[inline]
+    pub(crate) fn set_level(&mut self, level: BidiLevel) {
+        self.level = level;
+    }
+}
+
 impl Analyzer {
     /// Creates a new analyzer.
     pub fn new() -> Self {
@@ -34,7 +81,42 @@ impl Analyzer {
     /// This reuses the allocations of `analysis`.
     pub fn analyze(&mut self, text: &str, options: &AnalysisOptions<'_>, analysis: &mut Analysis) {
         analysis.clear();
-        analyze_text(self, text, options, analysis);
+        analyze_text(self, text, options, &mut [], analysis);
+    }
+
+    /// Analyze source text and inline objects together, overwriting their bidi levels.
+    ///
+    /// Each object participates in the Unicode bidirectional algorithm as U+FFFC,
+    /// irrespective of whether it occupies space in the layout. Objects at the same
+    /// index participate in slice order. Source character indices, segmentation and
+    /// shaping information are retained, and allocations in `analysis` are reused.
+    ///
+    /// # Panics
+    ///
+    /// Panics if objects are not sorted by index or if an index is not a character
+    /// boundary within `text`.
+    pub fn analyze_with_objects(
+        &mut self,
+        text: &str,
+        options: &AnalysisOptions<'_>,
+        objects: &mut [BidiObject],
+        analysis: &mut Analysis,
+    ) {
+        let mut previous_index = 0;
+        for object in objects.iter_mut() {
+            assert!(
+                text.is_char_boundary(object.index),
+                "object index must be a character boundary within text"
+            );
+            assert!(
+                object.index >= previous_index,
+                "objects must be sorted by index"
+            );
+            previous_index = object.index;
+            object.level = BidiLevel::new(0);
+        }
+        analysis.clear();
+        analyze_text(self, text, options, objects, analysis);
     }
 }
 

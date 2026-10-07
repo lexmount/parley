@@ -30,7 +30,7 @@ use parley_data::Properties;
 
 use crate::bidi;
 use crate::break_overrides::LineBreakContext;
-use crate::{AnalysisOptions, Analyzer, LineBreakConfig};
+use crate::{AnalysisOptions, Analyzer, BidiObject, LineBreakConfig};
 
 /// The result of [`Analyzer::analyze`].
 #[derive(Debug, Default)]
@@ -389,6 +389,7 @@ pub(crate) fn analyze_text(
     analyzer: &mut Analyzer,
     text: &str,
     options: &AnalysisOptions<'_>,
+    objects: &mut [BidiObject],
     analysis: &mut Analysis,
 ) {
     /// Turns the sparse, sorted, non-overlapping `options.line_break` into a contiguous sequence of
@@ -534,10 +535,14 @@ pub(crate) fn analyze_text(
     }
 
     if text.is_empty() {
-        analyzer
-            .bidi
-            .resolve(core::iter::empty(), options.base_direction);
-        analysis.paragraph_level = analyzer.bidi.base_level();
+        resolve_bidi(
+            analyzer,
+            text,
+            options.base_direction,
+            objects,
+            analysis,
+            &AnalysisDataSources::new(),
+        );
         return;
     }
 
@@ -809,18 +814,74 @@ pub(crate) fn analyze_text(
     }
 
     if needs_bidi_resolution || options.base_direction == BaseDirection::Rtl {
-        analyzer.bidi.resolve(
-            text.chars().map(|ch| {
-                let bidi_class = data_sources.properties(ch).bidi_class();
-                // TODO: maybe extend Properties to u64 to fit BidiMirroringGlyph
-                let bracket = data_sources.brackets().get(ch);
-                (ch, (bidi_class, bracket))
-            }),
+        resolve_bidi(
+            analyzer,
+            text,
             options.base_direction,
+            objects,
+            analysis,
+            &data_sources,
         );
+    }
+}
+
+// Object anchors are UTF-8 byte offsets into the source text. Resolver levels
+// follow the merged character sequence. Projection retains only levels for
+// source characters in Analysis and writes object levels back to BidiObjects.
+fn resolve_bidi(
+    analyzer: &mut Analyzer,
+    text: &str,
+    direction: BaseDirection,
+    objects: &mut [BidiObject],
+    analysis: &mut Analysis,
+    data: &AnalysisDataSources,
+) {
+    let properties = |ch| {
+        let bidi_class = data.properties(ch).bidi_class();
+        // TODO: maybe extend Properties to u64 to fit BidiMirroringGlyph
+        (ch, (bidi_class, data.brackets().get(ch)))
+    };
+    if objects.is_empty() {
+        analyzer
+            .bidi
+            .resolve(text.chars().map(properties), direction);
         core::mem::swap(&mut analysis.levels, &mut analyzer.bidi.levels);
         analysis.paragraph_level = analyzer.bidi.base_level();
+        return;
     }
+
+    let mut characters = text.char_indices().peekable();
+    let mut anchors = objects.iter().peekable();
+    // Merge objects into the bidi input without allocating a modified source string.
+    let input = core::iter::from_fn(|| {
+        if anchors.peek().is_some_and(|object| {
+            characters
+                .peek()
+                .is_none_or(|(byte, _)| object.index() <= *byte)
+        }) {
+            anchors.next();
+            Some('\u{fffc}')
+        } else {
+            characters.next().map(|(_, ch)| ch)
+        }
+    });
+    analyzer.bidi.resolve(input.map(properties), direction);
+    analysis.paragraph_level = analyzer.bidi.base_level();
+
+    // Project the merged levels back onto source characters and objects separately.
+    analysis.levels.reserve(analysis.info.len());
+    let mut levels = analyzer.bidi.levels().iter().copied();
+    let mut objects = objects.iter_mut().peekable();
+    for (byte, _) in text.char_indices() {
+        while objects.peek().is_some_and(|object| object.index() == byte) {
+            objects.next().unwrap().set_level(levels.next().unwrap());
+        }
+        analysis.levels.push(levels.next().unwrap());
+    }
+    for object in objects {
+        object.set_level(levels.next().unwrap());
+    }
+    debug_assert_eq!(levels.len(), 0, "all bidi input levels must be consumed");
 }
 
 /// All characters contribute to shaping except:
