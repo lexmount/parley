@@ -8,7 +8,7 @@
 use crate::{ColorBrush, FONT_FAMILY_LIST, Sample, get_samples, with_contexts};
 use parley::{
     Alignment, AlignmentOptions, BaseDirection, FontFamily, FontStyle, FontWeight, InlineBox,
-    InlineBoxKind, Layout, PositionedLayoutItem, StyleProperty, VerticalAlign,
+    InlineBoxBidi, InlineBoxKind, Layout, PositionedLayoutItem, StyleProperty, VerticalAlign,
 };
 use std::hint::black_box;
 use std::ops::Range;
@@ -89,6 +89,73 @@ fn build_inline_boxes(text: &str, indices: &[usize]) -> Layout<ColorBrush> {
         }
         builder.build(text)
     })
+}
+
+/// Benchmark 100 transparent marker pairs, with zero or 100 neutral objects.
+///
+/// Every span uses the same style. Each pair contributes an `InheritNext` marker
+/// at its start and an `InheritPrevious` marker at its end.
+pub fn inline_host() -> Vec<Benchmark> {
+    let mut benchmarks = Vec::new();
+    for (label, sample, direction) in [
+        ("LTR", "hello world ", BaseDirection::Ltr),
+        ("Mixed, LTR base", "hello אב 123 ", BaseDirection::Ltr),
+        ("Mixed, RTL base", "hello אב 123 ", BaseDirection::Rtl),
+    ] {
+        let text = sample.repeat(100);
+        let boundaries = text
+            .char_indices()
+            .map(|(byte, _)| byte)
+            .chain(std::iter::once(text.len()))
+            .collect::<Vec<_>>();
+        let chars_per_span = sample.chars().count();
+        for object_count in [0, 100] {
+            let text = text.clone();
+            let boundaries = boundaries.clone();
+            benchmarks.push(benchmark_fn(
+                format!("Inline Host - {label}, 100 spans, {object_count} objects"),
+                move |b| {
+                    let text = text.clone();
+                    let boundaries = boundaries.clone();
+                    b.iter(move || {
+                        with_contexts(|fonts, context| {
+                            let mut builder = context.ranged_builder(fonts, &text, 1.0, false);
+                            builder.push_default(FontFamily::from(FONT_FAMILY_LIST));
+                            builder.set_base_direction(direction);
+                            for span in 0..100 {
+                                let start = boundaries[span * chars_per_span];
+                                let middle = boundaries[span * chars_per_span + chars_per_span / 2];
+                                let end = boundaries[(span + 1) * chars_per_span];
+                                for (slot, index, width, participation) in [
+                                    (0, start, 2.0, InlineBoxBidi::InheritNext),
+                                    (1, middle, 10.0, InlineBoxBidi::Neutral),
+                                    (2, end, 2.0, InlineBoxBidi::InheritPrevious),
+                                ] {
+                                    if slot == 1 && object_count == 0 {
+                                        continue;
+                                    }
+                                    builder.push_inline_box_with_bidi(
+                                        InlineBox {
+                                            id: (span * 3 + slot) as u64,
+                                            index,
+                                            kind: InlineBoxKind::InFlow,
+                                            width,
+                                            height: if slot == 1 { 10.0 } else { 0.0 },
+                                            baseline: None,
+                                            vertical_align: VerticalAlign::BASELINE,
+                                        },
+                                        participation,
+                                    );
+                                }
+                            }
+                            black_box(builder.build(&text))
+                        })
+                    })
+                },
+            ));
+        }
+    }
+    benchmarks
 }
 
 /// Benchmark for default style.
