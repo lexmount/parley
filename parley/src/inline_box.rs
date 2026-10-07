@@ -3,6 +3,7 @@
 
 use crate::VerticalAlign;
 use parlance::BidiLevel;
+use parley_engine::InlineBoxBidi;
 
 /// A box to be laid out inline with text
 ///
@@ -40,7 +41,9 @@ pub struct InlineBox {
 #[derive(PartialEq, Debug, Clone)]
 pub(crate) struct LayoutInlineBox {
     pub(crate) inline_box: InlineBox,
-    /// Resolved level of the virtual U+FFFC at the box's source index.
+    /// Bidi participation of the object or transparent marker.
+    pub(crate) bidi: InlineBoxBidi,
+    /// Assigned bidi level, resolved for neutral objects or inherited for markers.
     pub(crate) bidi_level: BidiLevel,
     /// Style index of the span containing the box, against which the box's `vertical_align`
     /// is resolved. The box itself has no style of its own.

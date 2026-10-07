@@ -108,6 +108,19 @@ impl<'a, B: Brush> Line<'a, B> {
         }
     }
 
+    /// Inline boxes and their indices in this line's visual item order.
+    ///
+    /// These indices share the same space as [`Run::index`] and can be used
+    /// with [`Layout::reorder_line_items`].
+    pub fn inline_box_indices(&self) -> impl Iterator<Item = (usize, &'a InlineBox)> + use<'a, B> {
+        let layout = self.layout;
+        layout.data.line_items[self.data.item_range.clone()]
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.kind == LayoutItemKind::InlineBox)
+            .map(move |(index, item)| (index, &layout.data.inline_boxes[item.index].inline_box))
+    }
+
     /// Returns an iterator over the runs for the line.
     pub fn runs(&self) -> impl Iterator<Item = Run<'a, B>> + 'a + Clone + use<'a, B> {
         self.items_nonpositioned().filter_map(|item| item.run())

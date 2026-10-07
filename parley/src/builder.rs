@@ -14,9 +14,9 @@ use core::ops::{Bound, Range, RangeBounds};
 use parlance::{BaseDirection, BidiLevel};
 use parley_engine::break_overrides::LineBreakOverrideFn;
 
-use crate::InlineBoxKind;
 use crate::inline_box::{InlineBox, LayoutInlineBox};
 use crate::resolve::{ResolvedStyle, StyleRun};
+use crate::{InlineBoxBidi, InlineBoxKind};
 
 #[derive(Clone, Copy)]
 pub(crate) struct BuilderOptions<'a> {
@@ -74,8 +74,17 @@ impl<'b, B: Brush> RangedBuilder<'b, B> {
     /// the source text, including its end. Boxes can be pushed in any order; boxes
     /// at the same offset retain their insertion order before bidi reordering.
     pub fn push_inline_box(&mut self, inline_box: InlineBox) {
+        self.push_inline_box_with_bidi(inline_box, InlineBoxBidi::Neutral);
+    }
+
+    /// Adds a box with explicit bidi participation at its source-text offset.
+    ///
+    /// The anchor rules are the same as [`Self::push_inline_box`]. Use inherited
+    /// levels only for transparent structural markers, not real inline objects.
+    pub fn push_inline_box_with_bidi(&mut self, inline_box: InlineBox, bidi: InlineBoxBidi) {
         self.lcx.inline_boxes.push(LayoutInlineBox {
             inline_box,
+            bidi,
             bidi_level: BidiLevel::new(0),
             parent_style_index: 0,
             baseline_offset: 0.,
@@ -184,8 +193,17 @@ impl<'b, B: Brush> StyleRunBuilder<'b, B> {
     /// the source text, including its end. Boxes can be pushed in any order; boxes
     /// at the same offset retain their insertion order before bidi reordering.
     pub fn push_inline_box(&mut self, inline_box: InlineBox) {
+        self.push_inline_box_with_bidi(inline_box, InlineBoxBidi::Neutral);
+    }
+
+    /// Adds a box with explicit bidi participation at its source-text offset.
+    ///
+    /// The anchor rules are the same as [`Self::push_inline_box`]. Use inherited
+    /// levels only for transparent structural markers, not real inline objects.
+    pub fn push_inline_box_with_bidi(&mut self, inline_box: InlineBox, bidi: InlineBoxBidi) {
         self.lcx.inline_boxes.push(LayoutInlineBox {
             inline_box,
+            bidi,
             bidi_level: BidiLevel::new(0),
             parent_style_index: 0,
             baseline_offset: 0.,
@@ -282,7 +300,15 @@ impl<'b, B: Brush> TreeBuilder<'b, B> {
     ///
     /// The supplied [`InlineBox::index`] is ignored. Its offset is computed from
     /// the committed text after whitespace handling.
-    pub fn push_inline_box(&mut self, mut inline_box: InlineBox) {
+    pub fn push_inline_box(&mut self, inline_box: InlineBox) {
+        self.push_inline_box_with_bidi(inline_box, InlineBoxBidi::Neutral);
+    }
+
+    /// Adds a box with explicit bidi participation after the text pushed so far.
+    ///
+    /// Like [`Self::push_inline_box`], this ignores the supplied source offset
+    /// and computes it after whitespace handling.
+    pub fn push_inline_box_with_bidi(&mut self, mut inline_box: InlineBox, bidi: InlineBoxBidi) {
         self.lcx.tree_style_builder.commit_uncommitted_text();
 
         if inline_box.kind == InlineBoxKind::InFlow {
@@ -295,6 +321,7 @@ impl<'b, B: Brush> TreeBuilder<'b, B> {
         let parent_style_index = self.lcx.tree_style_builder.resolve_current_style_id();
         self.lcx.inline_boxes.push(LayoutInlineBox {
             inline_box,
+            bidi,
             bidi_level: BidiLevel::new(0),
             parent_style_index,
             baseline_offset: 0.,
