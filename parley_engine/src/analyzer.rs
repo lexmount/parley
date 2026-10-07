@@ -23,29 +23,64 @@ impl core::fmt::Debug for Analyzer {
     }
 }
 
-/// An inline object participating in bidirectional analysis as a virtual U+FFFC.
+/// How an inline object or transparent marker participates in bidi analysis.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InlineBoxBidi {
+    /// Resolve a neutral U+FFFC without inserting it into the source text.
+    Neutral,
+    /// Inherit the preceding source character, object or marker's assigned level.
+    ///
+    /// Before the first item, inherit the paragraph level. This includes the
+    /// level assigned to a preceding `InheritNext` marker at the same anchor.
+    InheritPrevious,
+    /// Inherit the next source character or neutral object's resolved level.
+    ///
+    /// Other transparent markers are skipped when looking ahead. At EOF,
+    /// inherit the paragraph level. The assigned level becomes the preceding
+    /// level for any following `InheritPrevious` marker.
+    InheritNext,
+}
+
+/// An inline object's source anchor, bidi participation and resolved level.
 ///
 /// The replacement character is not inserted into the source text and does not
 /// participate in segmentation or shaping.
 #[derive(Clone, Copy, Debug)]
 pub struct BidiObject {
     index: usize,
+    participation: InlineBoxBidi,
     level: BidiLevel,
 }
 
 impl BidiObject {
-    /// Creates an object anchored at `index` in the source text.
+    /// Creates a neutral object anchored at `index` in the source text.
     ///
     /// See [`Self::index`] for the placement semantics and valid offsets.
     #[inline]
     pub fn new(index: usize) -> Self {
+        Self::with_participation(index, InlineBoxBidi::Neutral)
+    }
+
+    /// Creates an object or transparent marker with explicit bidi participation.
+    ///
+    /// The source anchor follows the same rules as [`Self::new`].
+    pub fn with_participation(index: usize, participation: InlineBoxBidi) -> Self {
         Self {
             index,
+            participation,
             level: BidiLevel::new(0),
         }
     }
 
-    /// Byte offset at which a virtual U+FFFC is inserted for bidi analysis.
+    /// Returns how this object participates in bidi analysis.
+    pub fn participation(&self) -> InlineBoxBidi {
+        self.participation
+    }
+
+    /// Source byte offset at which the object participates in bidi analysis.
+    ///
+    /// Neutral objects insert a virtual U+FFFC; inherited-level markers add no
+    /// character to the bidi input.
     ///
     /// An object at offset `i` participates immediately before the source character
     /// beginning at `i`; `text.len()` places it after the final character. The offset
@@ -86,10 +121,11 @@ impl Analyzer {
 
     /// Analyze source text and inline objects together, overwriting their bidi levels.
     ///
-    /// Each object participates in the Unicode bidirectional algorithm as U+FFFC,
-    /// irrespective of whether it occupies space in the layout. Objects at the same
-    /// index participate in slice order. Source character indices, segmentation and
-    /// shaping information are retained, and allocations in `analysis` are reused.
+    /// Neutral objects participate in the Unicode bidirectional algorithm as U+FFFC,
+    /// irrespective of whether they occupy space in the layout. Inherited-level
+    /// markers add no characters. Objects at the same index are assigned in slice order.
+    /// Source character indices, segmentation and shaping information are retained,
+    /// and allocations in `analysis` are reused.
     ///
     /// # Panics
     ///

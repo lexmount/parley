@@ -173,6 +173,42 @@ impl<B: Brush> Layout<B> {
         self.data.inline_boxes.iter_mut().map(|b| &mut b.inline_box)
     }
 
+    /// Replace a line's visual item order with a permutation of its current items.
+    ///
+    /// Call after line breaking and before alignment. Hosts can use this to place
+    /// transparent decoration boxes at visual fragment edges after bidi reorder.
+    /// Text runs must retain their relative order; source ranges, advances and
+    /// line membership are preserved. Breaking lines again resets this order.
+    ///
+    /// Panics if the line does not exist, the indices are not a permutation, or
+    /// text runs are reordered.
+    pub fn reorder_line_items(&mut self, line_index: usize, order: &[usize]) {
+        let range = self.data.lines[line_index].item_range.clone();
+        assert_eq!(order.len(), range.len(), "invalid visual item count");
+        let items = &mut self.data.line_items[range];
+        let mut seen = alloc::vec![false; items.len()];
+        let mut previous_text = None;
+        for &index in order {
+            assert!(
+                index < items.len() && !seen[index],
+                "invalid visual permutation"
+            );
+            seen[index] = true;
+            if items[index].kind == super::data::LayoutItemKind::TextRun {
+                assert!(
+                    previous_text.is_none_or(|previous| previous < index),
+                    "text order must be preserved"
+                );
+                previous_text = Some(index);
+            }
+        }
+        let reordered = order
+            .iter()
+            .map(|&index| items[index].clone())
+            .collect::<alloc::vec::Vec<_>>();
+        items.clone_from_slice(&reordered);
+    }
+
     /// Returns an iterator over the lines in the layout.
     pub fn lines(
         &self,

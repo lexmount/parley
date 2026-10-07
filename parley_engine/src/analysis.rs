@@ -30,7 +30,7 @@ use parley_data::Properties;
 
 use crate::bidi;
 use crate::break_overrides::LineBreakContext;
-use crate::{AnalysisOptions, Analyzer, BidiObject, LineBreakConfig};
+use crate::{AnalysisOptions, Analyzer, BidiObject, InlineBoxBidi, LineBreakConfig};
 
 /// The result of [`Analyzer::analyze`].
 #[derive(Debug, Default)]
@@ -854,15 +854,19 @@ fn resolve_bidi(
     let mut anchors = objects.iter().peekable();
     // Merge objects into the bidi input without allocating a modified source string.
     let input = core::iter::from_fn(|| {
-        if anchors.peek().is_some_and(|object| {
-            characters
-                .peek()
-                .is_none_or(|(byte, _)| object.index() <= *byte)
-        }) {
-            anchors.next();
-            Some('\u{fffc}')
-        } else {
-            characters.next().map(|(_, ch)| ch)
+        loop {
+            if anchors.peek().is_some_and(|object| {
+                characters
+                    .peek()
+                    .is_none_or(|(byte, _)| object.index() <= *byte)
+            }) {
+                let object = anchors.next()?;
+                if object.participation() == InlineBoxBidi::Neutral {
+                    return Some('\u{fffc}');
+                }
+            } else {
+                return characters.next().map(|(_, ch)| ch);
+            }
         }
     });
     analyzer.bidi.resolve(input.map(properties), direction);
@@ -870,16 +874,34 @@ fn resolve_bidi(
 
     // Project the merged levels back onto source characters and objects separately.
     analysis.levels.reserve(analysis.info.len());
-    let mut levels = analyzer.bidi.levels().iter().copied();
+    let mut levels = analyzer.bidi.levels().iter().copied().peekable();
     let mut objects = objects.iter_mut().peekable();
+    let paragraph_level = analysis.paragraph_level;
+    let mut previous = paragraph_level;
+    // Transparent markers consume no resolver level. Every assigned item,
+    // including a look-ahead marker, becomes the preceding assigned level.
+    let assign = |object: &mut BidiObject,
+                  previous: &mut BidiLevel,
+                  levels: &mut core::iter::Peekable<
+        core::iter::Copied<core::slice::Iter<'_, BidiLevel>>,
+    >| {
+        let level = match object.participation() {
+            InlineBoxBidi::Neutral => levels.next().unwrap(),
+            InlineBoxBidi::InheritPrevious => *previous,
+            InlineBoxBidi::InheritNext => levels.peek().copied().unwrap_or(paragraph_level),
+        };
+        object.set_level(level);
+        *previous = level;
+    };
     for (byte, _) in text.char_indices() {
         while objects.peek().is_some_and(|object| object.index() == byte) {
-            objects.next().unwrap().set_level(levels.next().unwrap());
+            assign(objects.next().unwrap(), &mut previous, &mut levels);
         }
-        analysis.levels.push(levels.next().unwrap());
+        previous = levels.next().unwrap();
+        analysis.levels.push(previous);
     }
     for object in objects {
-        object.set_level(levels.next().unwrap());
+        assign(object, &mut previous, &mut levels);
     }
     debug_assert_eq!(levels.len(), 0, "all bidi input levels must be consumed");
 }

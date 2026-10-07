@@ -117,6 +117,11 @@ impl<'a, B: Brush> Run<'a, B> {
             .unwrap_or(&[])
     }
 
+    /// Resolved line height of this run, including its used font metrics.
+    pub fn line_height(&self) -> f32 {
+        self.data.line_height
+    }
+
     /// Returns metrics for the run.
     pub fn font_metrics(&self) -> &FontMetrics {
         &self.shaped.font_metrics

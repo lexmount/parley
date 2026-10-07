@@ -149,3 +149,5 @@ pub use style::*;
     since = "0.6.0"
 )]
 pub type Font = FontData;
+
+pub use parley_engine::InlineBoxBidi;

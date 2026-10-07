@@ -68,7 +68,7 @@ pub(crate) fn analyze_text<B: Brush>(
     lcx.bidi_objects.extend(
         lcx.inline_boxes
             .iter()
-            .map(|input| BidiObject::new(input.inline_box.index)),
+            .map(|input| BidiObject::with_participation(input.inline_box.index, input.bidi)),
     );
     lcx.analyzer
         .analyze_with_objects(text, &options, &mut lcx.bidi_objects, &mut lcx.analysis);
