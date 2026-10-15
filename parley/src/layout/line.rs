@@ -1,12 +1,12 @@
 // Copyright 2021 the Parley Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-use crate::layout::Style;
 use crate::layout::data::BreakReason;
 use crate::layout::data::{LayoutItemKind, LineData};
 use crate::layout::layout::Layout;
 use crate::layout::run::Run;
 use crate::layout::spacing::EffectiveSpacing;
+use crate::layout::{Cluster, Style};
 use crate::style::Brush;
 use crate::{BaselineShift, InlineBox, InlineBoxKind};
 
@@ -124,6 +124,44 @@ impl<'a, B: Brush> Line<'a, B> {
     /// Returns an iterator over the runs for the line.
     pub fn runs(&self) -> impl Iterator<Item = Run<'a, B>> + 'a + Clone + use<'a, B> {
         self.items_nonpositioned().filter_map(|item| item.run())
+    }
+
+    /// Returns clusters in visual left-to-right order with their inline-axis offsets.
+    ///
+    /// Each offset matches [`Cluster::visual_offset`]: it includes [`LineMetrics::offset`],
+    /// but not [`LineMetrics::inline_min_coord`]. Add the latter to get the cluster's
+    /// inline-axis coordinate within the layout.
+    ///
+    /// Positions are accumulated in a single pass over the line's items and clusters,
+    /// without allocating. The offsets reflect the current line breaking, alignment,
+    /// spacing and visual item order.
+    pub fn positioned_visual_clusters(
+        &self,
+    ) -> impl Iterator<Item = (Cluster<'a, B>, f32)> + Clone + use<'a, B> {
+        let mut run_offset = self.metrics().offset;
+        self.items_nonpositioned()
+            .filter_map(move |item| match item {
+                LineItem::InlineBox(inline_box) => {
+                    run_offset += inline_box.width;
+                    None
+                }
+                LineItem::Run(run) => {
+                    let cluster_offset = run_offset;
+                    // Keep these sums separate to match visual_offset()'s rounding:
+                    // preceding runs contribute run.advance(), not their cluster sum.
+                    run_offset += run.advance();
+                    // Accumulate advances even when iterator adaptors skip clusters.
+                    Some(
+                        run.visual_clusters()
+                            .scan(cluster_offset, |offset, cluster| {
+                                let position = *offset;
+                                *offset += cluster.advance();
+                                Some((cluster, position))
+                            }),
+                    )
+                }
+            })
+            .flatten()
     }
 
     /// Returns an iterator over the non-glyph runs and inline boxes for the line.
@@ -355,7 +393,7 @@ impl<'a, B: Brush> GlyphRun<'a, B> {
 /// [`GlyphRunIter::next`] calls.
 ///
 /// This walks the run's shaped data ([`Atom`]s) directly rather than materialising
-/// [`Cluster`](crate::Cluster)s and their composed glyph iterators. It computes the same glyph
+/// [`Cluster`]s and their composed glyph iterators. It computes the same glyph
 /// counts and advances as [`Run::glyphs_in`] over the same atoms.
 #[derive(Clone)]
 struct AtomIter<'a> {

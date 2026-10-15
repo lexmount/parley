@@ -438,10 +438,14 @@ impl<'a, B: Brush> Cluster<'a, B> {
         None
     }
 
-    /// Returns the visual offset of this cluster along direction of text flow.
+    /// Returns the visual inline-axis offset of this cluster from the line's minimum coordinate.
     ///
-    /// This cost of this function is roughly linear in the number of clusters
-    /// on the containing line.
+    /// The offset includes [`crate::LineMetrics::offset`], but not
+    /// [`crate::LineMetrics::inline_min_coord`].
+    ///
+    /// The cost of this function is roughly linear in the number of clusters
+    /// on the containing line. Use [`Line::positioned_visual_clusters`] to obtain
+    /// all cluster offsets in a single pass.
     pub fn visual_offset(&self) -> Option<f32> {
         let line = self.line();
         let mut offset = line.metrics().offset;
