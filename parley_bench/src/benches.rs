@@ -14,6 +14,54 @@ use std::hint::black_box;
 use std::ops::Range;
 use tango_bench::{Benchmark, benchmark_fn};
 
+/// Benchmark obtaining every cluster's position on increasingly long, unwrapped lines.
+pub fn cluster_positions() -> Vec<Benchmark> {
+    let mut benchmarks = Vec::new();
+    for (label, sample) in [("LTR", "A"), ("Mixed RTL", "hello العربية ")] {
+        for count in [128_usize, 512, 2048] {
+            let text = sample
+                .repeat(count.div_ceil(sample.chars().count()))
+                .chars()
+                .take(count)
+                .collect::<String>();
+            for positioned in [false, true] {
+                let text = text.clone();
+                let method = if positioned {
+                    "iterator"
+                } else {
+                    "visual_offset"
+                };
+                benchmarks.push(benchmark_fn(
+                    format!("Cluster Positions - {label}, {count} clusters, {method}"),
+                    move |b| {
+                        let mut layout = build_layout(&text, []);
+                        layout.break_all_lines(None);
+                        b.iter(move || {
+                            for line in layout.lines() {
+                                if positioned {
+                                    for (cluster, offset) in line.positioned_visual_clusters() {
+                                        black_box((cluster.path(), offset));
+                                    }
+                                } else {
+                                    for run in line.runs() {
+                                        for cluster in run.visual_clusters() {
+                                            black_box((
+                                                cluster.path(),
+                                                cluster.visual_offset().unwrap(),
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
+                        })
+                    },
+                ));
+            }
+        }
+    }
+    benchmarks
+}
+
 /// Benchmark building LTR and mixed-direction text with zero, one or many inline objects.
 ///
 /// The many-object cases also measure line breaking and alignment without rebuilding.
