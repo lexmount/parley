@@ -436,6 +436,31 @@ impl<'a, B: Brush> GlyphRun<'a, B> {
         self.run.glyphs_in(self.shaped_clusters.clone())
     }
 
+    /// Returns unpositioned glyphs and their shaping atoms' UTF-8 source ranges.
+    ///
+    /// Glyph order, offsets and spacing are identical to [`Self::glyphs`]. Each
+    /// atom's range is repeated for its glyphs, including multi-grapheme
+    /// ligatures. This walks only this view and allocates no mapping storage.
+    pub fn glyphs_with_text_ranges(
+        &self,
+    ) -> impl Iterator<Item = (Glyph, Range<usize>)> + Clone + use<'a, B> {
+        let run = self.run;
+        let slice = run.full_slice().narrow(self.shaped_clusters.clone());
+        let rtl = run.is_rtl();
+        let mut atoms = if rtl {
+            slice.atoms_end()
+        } else {
+            slice.atoms_start()
+        };
+        core::iter::from_fn(move || if rtl { atoms.prev() } else { atoms.next() }).flat_map(
+            move |atom| {
+                let text = slice.text_byte_range(atom.char_range());
+                run.glyphs_in(atom.shaped_clusters_range())
+                    .map(move |glyph| (glyph, text.clone()))
+            },
+        )
+    }
+
     /// Returns an iterator over the fully positioned glyphs in the run.
     pub fn positioned_glyphs(&'a self) -> impl Iterator<Item = Glyph> + 'a + Clone {
         let mut offset = self.offset;

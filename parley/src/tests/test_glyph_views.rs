@@ -57,6 +57,33 @@ fn check_views(glyphs: &GlyphRun<'_, ()>) -> usize {
             let range = bounds[start]..bounds[end];
             let view = glyphs.slice_text(range.clone()).unwrap();
             assert_eq!(view.text_range(), range);
+            let mapped = view.glyphs_with_text_ranges().collect::<Vec<_>>();
+            assert_eq!(
+                mapped
+                    .iter()
+                    .map(|(glyph, _)| glyph_key(*glyph))
+                    .collect::<Vec<_>>(),
+                view.glyphs().map(glyph_key).collect::<Vec<_>>(),
+                "source mapping must preserve the complete glyph stream"
+            );
+            assert!(
+                mapped
+                    .iter()
+                    .all(|(_, source)| { range.start <= source.start && source.end <= range.end })
+            );
+            let expected = glyphs
+                .glyphs_with_text_ranges()
+                .filter(|(_, source)| range.start <= source.start && source.end <= range.end)
+                .map(|(glyph, source)| (glyph_key(glyph), source))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                mapped
+                    .into_iter()
+                    .map(|(glyph, source)| (glyph_key(glyph), source))
+                    .collect::<Vec<_>>(),
+                expected,
+                "views must retain the original atom/source associations"
+            );
             assert!(core::ptr::eq(view.run().font(), glyphs.run().font()));
             assert!(core::ptr::eq(view.style(), glyphs.style()));
             assert_eq!(view.baseline().to_bits(), glyphs.baseline().to_bits());
