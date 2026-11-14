@@ -371,6 +371,66 @@ impl<'a, B: Brush> GlyphRun<'a, B> {
         self.advance
     }
 
+    /// Returns this styled glyph segment's UTF-8 byte range in the source text.
+    ///
+    /// Unlike [`Run::text_range`], this only covers this segment, even when the
+    /// shaped run is shared with other styles or split across lines.
+    pub fn text_range(&self) -> Range<usize> {
+        let slice = self.run.full_slice().narrow(self.shaped_clusters.clone());
+        slice.text_byte_range(slice.char_range())
+    }
+
+    /// Returns a view of `text_range` using the original shape and position.
+    ///
+    /// The range uses UTF-8 source offsets and must be nonempty, contained in
+    /// this segment, and start and end on shaping atom boundaries. A shaping
+    /// atom may span multiple graphemes (for example, a ligature). Invalid
+    /// ranges return `None`; this does not round boundaries or reshape text.
+    ///
+    /// The view borrows the same layout and retains its style, baseline and
+    /// spacing. In particular, a logical suffix in an RTL run stays at its
+    /// original visual position. This allocates no glyph storage. Computing a
+    /// partial view's offset and advance walks its glyph prefix and contents;
+    /// callers constructing several views should retain them for reuse.
+    pub fn slice_text(&self, text_range: Range<usize>) -> Option<Self> {
+        if text_range.start >= text_range.end {
+            return None;
+        }
+        let slice = self.run.full_slice().narrow(self.shaped_clusters.clone());
+        let first = slice.atom_at_text_byte(text_range.start.try_into().ok()?)?;
+        let last = slice.atom_at_text_byte((text_range.end - 1).try_into().ok()?)?;
+        if slice.text_byte_range(first.char_range()).start != text_range.start
+            || slice.text_byte_range(last.char_range()).end != text_range.end
+        {
+            return None;
+        }
+        let shaped_clusters = first.shaped_clusters_range().start..last.shaped_clusters_range().end;
+        if shaped_clusters == self.shaped_clusters {
+            return Some(self.clone());
+        }
+        let prefix = if self.run.is_rtl() {
+            shaped_clusters.end..self.shaped_clusters.end
+        } else {
+            self.shaped_clusters.start..shaped_clusters.start
+        };
+        // Accumulate in the same order as positioned_glyphs(), including its
+        // original offset, so slicing does not change floating-point rounding.
+        let offset = self
+            .run
+            .glyphs_in(prefix)
+            .fold(self.offset, |offset, glyph| offset + glyph.advance);
+        let advance = self
+            .run
+            .glyphs_in(shaped_clusters.clone())
+            .fold(0.0, |advance, glyph| advance + glyph.advance);
+        Some(Self {
+            shaped_clusters,
+            offset,
+            advance,
+            ..self.clone()
+        })
+    }
+
     /// Returns an iterator over the glyphs in the run.
     pub fn glyphs(&'a self) -> impl Iterator<Item = Glyph> + 'a + Clone {
         self.run.glyphs_in(self.shaped_clusters.clone())
